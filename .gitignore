@@ -1,0 +1,8 @@
+.DS_Store
+.pai-tong-kuan-public
+.package-files
+*.zip
+*.log
+.env
+.env.*
+node_modules/

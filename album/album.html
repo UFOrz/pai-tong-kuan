@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>拍同款相册</title>
+  <link rel="stylesheet" href="album.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../icons/icon48.png" alt="" />
+      <h1>拍同款相册</h1>
+      <span class="count" id="countTag"></span>
+    </div>
+    <input id="searchInput" type="search" placeholder="搜索提示词 / 中文解读 / 模型…" />
+    <div class="actions">
+      <button id="btnSelectAll" class="btn">全选</button>
+      <button id="btnDownloadSel" class="btn" disabled>下载</button>
+      <button id="btnDeleteSel" class="btn danger" disabled>删除</button>
+      <button id="btnOptions" class="btn ghost">设置</button>
+    </div>
+  </header>
+
+  <div id="selBar" class="sel-bar" hidden>已选 <b id="selCount">0</b> 张</div>
+
+  <main id="grid" class="grid"></main>
+
+  <nav id="pager" class="pager" aria-label="相册分页" hidden>
+    <button id="btnPrevPage" class="btn" type="button">上一页</button>
+    <div id="pageNumbers" class="page-numbers" aria-label="选择页码"></div>
+    <span id="pageInfo" class="sr-only" aria-live="polite"></span>
+    <button id="btnNextPage" class="btn" type="button">下一页</button>
+  </nav>
+
+  <div id="empty" class="empty" hidden>
+    <div class="empty-icon">🖼</div>
+    <p id="emptyTitle" class="empty-title">相册还是空的</p>
+    <p id="emptyDesc" class="empty-desc">在网页图片上悬停并点击魔法按钮，生成同款图片后会自动保存到这里。</p>
+  </div>
+
+  <!-- 大图灯箱 -->
+  <div id="lightbox" class="lightbox" hidden>
+    <div class="lb-backdrop" id="lbBackdrop"></div>
+    <div class="lb-shell">
+      <button class="lb-nav prev" id="lbPrev" type="button" aria-label="上一张" title="上一张（←）">‹</button>
+      <div class="lb-panel">
+        <div class="lb-img-box" id="lbImgBox">
+          <div class="lb-compare-stage" id="lbCompareStage">
+            <img id="lbImg" class="lb-result-img" alt="同款图片" />
+            <div class="lb-compare-source" id="lbCompareSource" hidden>
+              <img id="lbSourceImg" alt="原图" />
+              <span class="lb-compare-label source">原图</span>
+            </div>
+            <div class="lb-compare-divider" id="lbCompareDivider" hidden><span></span></div>
+            <span class="lb-compare-label result" id="lbResultLabel" hidden>同款图片</span>
+          </div>
+        </div>
+        <div class="lb-info">
+          <div class="lb-section">
+            <div class="lb-label row">
+              <span>提示词</span>
+              <div class="lb-label-actions">
+                <button id="lbCompareToggle" class="btn mini ghost lb-compare-toggle icon-action has-tooltip" type="button" aria-pressed="false" aria-label="准备对比…" data-tooltip="准备对比…" disabled>
+                  <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                    <path d="M12 4v16M5.5 16l3.2-3.2 3.3 3.3 2.2-2.2 4.3 4.1"></path>
+                  </svg>
+                </button>
+                <button id="lbAddCharacter" class="btn mini ghost icon-action has-tooltip" type="button" aria-label="添加到角色库" data-tooltip="添加到角色库" data-state="default">
+                  <svg class="action-icon state-icon state-default" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="8" cy="7" r="3"></circle>
+                    <path d="M3 18c.6-4 2.3-6 5-6s4.4 2 5 6M18 8v6M15 11h6"></path>
+                  </svg>
+                  <svg class="action-icon state-icon state-success" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="8" cy="7" r="3"></circle>
+                    <path d="M3 18c.6-4 2.3-6 5-6s4.4 2 5 6M15.5 13.5l2.2 2.2 4-5"></path>
+                  </svg>
+                  <svg class="action-icon state-icon state-loading" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.7"></path>
+                  </svg>
+                </button>
+                <button id="lbCopy" class="btn mini ghost icon-action has-tooltip" type="button" aria-label="复制提示词" data-tooltip="复制提示词">
+                  <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+                    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+                  </svg>
+                </button>
+                <button class="lb-close" id="lbClose" title="关闭" aria-label="关闭大图">×</button>
+              </div>
+            </div>
+            <div class="lb-prompt" id="lbPrompt"></div>
+            <div class="lb-sub" id="lbPromptZhBox" hidden>
+              <div class="lb-label small">中文解读</div>
+              <div class="lb-prompt zh" id="lbPromptZh"></div>
+            </div>
+            <div class="lb-sub" id="lbSourcePromptBox" hidden>
+              <div class="lb-label small">反推原文</div>
+              <div class="lb-prompt sub" id="lbSourcePrompt"></div>
+            </div>
+          </div>
+          <dl class="lb-meta">
+            <div><dt>生成平台</dt><dd id="lbProvider"></dd></div>
+            <div><dt>生成模型</dt><dd id="lbModel"></dd></div>
+            <div><dt>尺寸</dt><dd id="lbSize"></dd></div>
+            <div><dt>比例</dt><dd id="lbRatio"></dd></div>
+            <div><dt>生成时间</dt><dd id="lbTime"></dd></div>
+            <div id="lbSrcRow" hidden><dt>来源图片</dt><dd><a id="lbSrc" target="_blank" rel="noreferrer">查看原图</a></dd></div>
+            <div id="lbPageRow" hidden><dt>来源页面</dt><dd><a id="lbPage" target="_blank" rel="noreferrer">访问页面</a></dd></div>
+          </dl>
+          <div class="lb-create-actions">
+            <button id="lbRegenerate" class="btn primary-soft" type="button">✨ 再拍一张</button>
+            <button id="lbReplace" class="btn primary-soft btn-icon-label" type="button">
+              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="7.5" cy="7" r="3"></circle>
+                <path d="M2.8 18c.6-3.9 2.2-6 4.7-6s4.1 2.1 4.7 6"></path>
+                <path d="M15 7h6m-2.2-2.2L21 7l-2.2 2.2M21 15h-6m2.2-2.2L15 15l2.2 2.2"></path>
+              </svg>
+              <span>替换角色</span>
+            </button>
+            <div class="group-control"><select id="lbGroupCount" aria-label="组图数量"><option value="2">2 张</option><option value="4" selected>4 张</option><option value="6">6 张</option><option value="8">8 张</option></select><button id="lbGenerateGroup" class="btn primary-soft" type="button">生成组图</button></div>
+          </div>
+          <div class="lb-actions">
+            <button id="lbDownload" class="btn">下载</button>
+            <button id="lbDelete" class="btn danger">删除</button>
+          </div>
+        </div>
+      </div>
+      <button class="lb-nav next" id="lbNext" type="button" aria-label="下一张" title="下一张（→）">›</button>
+    </div>
+  </div>
+
+  <div id="confirmDialog" class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
+    <div id="confirmBackdrop" class="confirm-backdrop"></div>
+    <div class="confirm-card">
+      <h2 id="confirmTitle">确认删除</h2>
+      <p id="confirmMessage"></p>
+      <div class="confirm-actions">
+        <button id="confirmCancel" class="btn" type="button">取消</button>
+        <button id="confirmAccept" class="btn danger solid" type="button">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="album.js"></script>
+</body>
+</html>
