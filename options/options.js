@@ -197,7 +197,7 @@ function bindPlatformCard(card, platform) {
     e.currentTarget.textContent = ui(input.type === 'password' ? '显示' : '隐藏');
   });
   card.querySelector('.fetch-models').addEventListener('click', async (e) => {
-    if (!platform.baseUrl || !platform.apiKey) { showToast('请先填写 Base URL 和 API Key'); return; }
+    if (!platform.baseUrl || !platform.apiKey) { showToast(ui('请先填写 Base URL 和 API Key')); return; }
     e.currentTarget.disabled = true;
     platformStatus.set(platform.id, ui('正在获取…'));
     e.currentTarget.textContent = ui('获取中…');
@@ -207,18 +207,18 @@ function bindPlatformCard(card, platform) {
           cfg: { preset: platform.preset, baseUrl: platform.baseUrl, apiKey: platform.apiKey }
         }
       });
-      if (!resp?.ok) throw new Error(resp?.error || '获取失败');
+      if (!resp?.ok) throw new Error(resp?.error || ui('获取失败'));
       let added = 0;
       for (const model of resp.models || []) if (addModel(platform, model)) added += 1;
       platformStatus.set(platform.id, ui('已获取 {total} 个，新增 {added} 个', { total: resp.models?.length || 0, added }));
     } catch (error) {
-      platformStatus.set(platform.id, '获取失败：' + (error?.message || error));
+      platformStatus.set(platform.id, ui('获取失败：{error}', { error: error?.message || error }));
     }
     renderPlatforms();
   });
   card.querySelector('.add-model').addEventListener('click', () => {
     const input = card.querySelector('.manual-model');
-    if (addModel(platform, input.value)) renderPlatforms(); else showToast('请输入新的模型名称');
+    if (addModel(platform, input.value)) renderPlatforms(); else showToast(ui('请输入新的模型名称'));
   });
   card.querySelector('.model-list').addEventListener('change', (e) => {
     const capability = e.target.dataset.capability;

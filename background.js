@@ -183,14 +183,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return await runWindowJob(
           'generate',
           windowId,
-          (update) => generateAndSave({ ...msg.payload, windowId }, update),
+          (update, control) => generateAndSave({ ...msg.payload, windowId }, update, control),
           { sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null, label: 'generate' }
         );
       case 'ir.job.edit':
         return await runWindowJob(
           'edit',
           windowId,
-          (update) => editAndSave({ ...msg.payload, windowId }, update),
+          (update, control) => editAndSave({ ...msg.payload, windowId }, update, control),
           {
             sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null,
             label: msg.payload?.albumMeta?.kind === 'replacement' ? 'replacement' : 'generate'
@@ -200,9 +200,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return await runWindowJob(
           'group',
           windowId,
-          (update) => generateGroupAndSave({ ...msg.payload, windowId }, update),
+          (update, control) => generateGroupAndSave({ ...msg.payload, windowId }, update, control),
           { sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null, label: 'group' }
         );
+      case 'ir.job.cancel':
+        return await cancelWindowJob(windowId);
       case 'ir.getJob':
         return { ok: true, job: await getWindowSession('job', windowId) };
       case 'ir.getReverseJob':
@@ -723,26 +725,52 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
     ...initial
   };
   const isCurrent = () => runningJobs.get(registryKey)?.id === jobId;
+  const isCancelled = () => isCurrent() && runningJobs.get(registryKey)?.cancelRequested === true;
+  const checkpoint = () => {
+    if (!isCancelled()) return;
+    const error = new Error('任务已停止');
+    error.code = 'JOB_CANCELLED';
+    throw error;
+  };
   const update = async (patch = {}) => {
     state = { ...state, ...patch, id: jobId, type, updatedAt: Date.now() };
     if (!isCurrent()) return false;
     await setWindowSession(sessionKind, windowId, state);
     return true;
   };
-  runningJobs.set(registryKey, { id: jobId, type });
+  runningJobs.set(registryKey, { id: jobId, type, cancelRequested: false });
   await update();
   try {
-    const result = await executor(update);
+    const result = await executor(update, { isCancelled, checkpoint });
+    const cancelled = Boolean(result.cancelled || isCancelled());
     await update({
-      status: 'completed',
+      status: cancelled ? 'cancelled' : 'completed',
       finishedAt: Date.now(),
-      completed: result.recordIds?.length || state.completed || 1,
-      total: result.total || state.total || 1,
+      cancelledAt: cancelled ? Date.now() : undefined,
+      completed: Array.isArray(result.recordIds)
+        ? result.recordIds.length
+        : (state.completed ?? (cancelled ? 0 : 1)),
+      total: result.total ?? state.total ?? 1,
       recordIds: result.recordIds || state.recordIds,
       lastRecordId: result.lastRecordId || result.albumRecordId || state.lastRecordId || ''
     });
-    return { ok: true, jobId, ...result };
+    return { ok: true, jobId, ...result, cancelled };
   } catch (error) {
+    if (error?.code === 'JOB_CANCELLED') {
+      await update({
+        status: 'cancelled',
+        finishedAt: Date.now(),
+        cancelledAt: Date.now(),
+        stage: '任务已停止'
+      });
+      return {
+        ok: true,
+        cancelled: true,
+        jobId,
+        recordIds: state.recordIds || [],
+        lastRecordId: state.lastRecordId || ''
+      };
+    }
     await update({ status: 'failed', finishedAt: Date.now(), error: errText(error) });
     return {
       ok: false,
@@ -754,6 +782,24 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
   } finally {
     if (isCurrent()) runningJobs.delete(registryKey);
   }
+}
+
+async function cancelWindowJob(windowId) {
+  if (windowId == null) return { ok: false, error: '无法确定当前浏览器窗口' };
+  const registryKey = `job:${windowId}`;
+  const active = runningJobs.get(registryKey);
+  if (!active) return { ok: false, error: '当前没有可停止的任务' };
+  runningJobs.set(registryKey, { ...active, cancelRequested: true });
+  const state = await getWindowSession('job', windowId);
+  if (state?.status === 'running') {
+    await setWindowSession('job', windowId, {
+      ...state,
+      cancelRequested: true,
+      stage: '正在停止任务',
+      updatedAt: Date.now()
+    });
+  }
+  return { ok: true, requested: true };
 }
 
 async function persistReversePanelTask(windowId, resp) {
@@ -792,8 +838,9 @@ async function reverseAndPersist(payload, update) {
   return { ...resp, total: 1 };
 }
 
-async function generateAndSave(payload, update) {
+async function generateAndSave(payload, update, control) {
   const source = payload.sourceSnapshot ? { ...payload.sourceSnapshot } : null;
+  control.checkpoint();
   await update({
     stage: '正在调用生图模型',
     total: 1,
@@ -817,12 +864,20 @@ async function generateAndSave(payload, update) {
     sourceAssetId: sourceAssetIdOf(source),
     albumMeta: payload.albumMeta
   });
-  return { ...resp, albumRecordId, recordIds: [albumRecordId], lastRecordId: albumRecordId, total: 1 };
+  return {
+    ...resp,
+    albumRecordId,
+    recordIds: [albumRecordId],
+    lastRecordId: albumRecordId,
+    total: 1,
+    cancelled: control.isCancelled()
+  };
 }
 
-async function editAndSave(payload, update) {
+async function editAndSave(payload, update, control) {
   const source = payload.sourceSnapshot ? { ...payload.sourceSnapshot } : null;
   if (!source?.dataUrl) throw new Error('图生图缺少来源图片');
+  control.checkpoint();
   await update({
     stage: payload.jobLabel || '正在编辑图片',
     total: 1,
@@ -847,10 +902,17 @@ async function editAndSave(payload, update) {
     sourceAssetId: sourceAssetIdOf(source),
     albumMeta: payload.albumMeta
   });
-  return { ...resp, albumRecordId, recordIds: [albumRecordId], lastRecordId: albumRecordId, total: 1 };
+  return {
+    ...resp,
+    albumRecordId,
+    recordIds: [albumRecordId],
+    lastRecordId: albumRecordId,
+    total: 1,
+    cancelled: control.isCancelled()
+  };
 }
 
-async function generateGroupAndSave(payload, update) {
+async function generateGroupAndSave(payload, update, control) {
   const count = [2, 4, 6, 8].includes(Number(payload.count)) ? Number(payload.count) : 4;
   const source = payload.sourceSnapshot ? { ...payload.sourceSnapshot } : null;
   const useImageEdit = Boolean(payload.useImageEdit);
@@ -868,6 +930,7 @@ async function generateGroupAndSave(payload, update) {
   });
 
   for (let index = 0; index < count; index += 1) {
+    if (control.isCancelled()) break;
     const number = index + 1;
     if (index > 0) {
       await update({
@@ -921,8 +984,15 @@ async function generateGroupAndSave(payload, update) {
     });
     recordIds.push(albumRecordId);
     await update({ completed: number, recordIds: [...recordIds], lastRecordId: albumRecordId });
+    if (control.isCancelled()) break;
   }
-  return { recordIds, lastRecordId: recordIds.at(-1), total: count, useImageEdit };
+  return {
+    recordIds,
+    lastRecordId: recordIds.at(-1),
+    total: count,
+    useImageEdit,
+    cancelled: control.isCancelled()
+  };
 }
 
 async function recoverInterruptedJobs() {

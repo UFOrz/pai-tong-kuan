@@ -74,7 +74,7 @@
         <select id="selVisionModel" title="切换并保存为默认反推模型"></select>
       </div>
       <textarea id="taPrompt" rows="6" placeholder="反推得到的提示词会显示在这里，可以直接编辑"></textarea>
-      <p id="zhNote" class="note" hidden></p>
+      <p id="zhNote" class="note" tabindex="0" hidden></p>
     </section>
 
     <!-- 生成设置 -->
@@ -108,6 +108,7 @@
       </div>
       <div id="genProgress" class="loading" hidden>
         <span class="spinner"></span><span id="genText">正在生成，通常需要 10–60 秒…</span>
+        <button id="btnCancelGenerate" class="btn mini danger cancel-job" type="button">停止任务</button>
       </div>
       <div id="genDone" class="done-tag" hidden>✓ 生成成功</div>
       <div id="genError" class="error" hidden></div>
@@ -121,13 +122,14 @@
       <button id="btnReplaceGenerate" class="btn primary big" type="button">✨ 开始替换</button>
       <div id="replaceProgress" class="loading replace-status" hidden>
         <span class="spinner"></span><span id="replaceProgressText">正在替换角色或者物品…</span>
+        <button id="btnCancelReplace" class="btn mini danger cancel-job" type="button">停止任务</button>
       </div>
       <div id="replaceDone" class="done-tag replace-status" hidden>✓ 替换成功，已保存到相册</div>
       <div id="replaceError" class="error replace-status" hidden></div>
     </section>
 
     <section id="secBatch" class="card feature-card" hidden>
-      <div class="card-title">主体一致组图</div>
+      <div class="card-title row"><span>主体一致组图</span><span class="spacer"></span><button id="btnCancelGroup" class="btn mini danger" type="button" hidden>停止任务</button></div>
       <div id="batchStatus" class="feature-desc"></div>
       <div id="batchResults" class="batch-results"></div>
     </section>

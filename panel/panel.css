@@ -159,6 +159,18 @@ textarea:focus { outline: 2px solid #7c5cf6; outline-offset: -1px; border-color:
   padding: 8px 10px;
   line-height: 1.6;
 }
+#zhNote {
+  max-height: 120px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#zhNote:focus-visible {
+  outline: 2px solid #7c5cf6;
+  outline-offset: 2px;
+}
 
 .form-row {
   display: flex;
@@ -199,6 +211,9 @@ select {
 }
 .btn.primary:hover { box-shadow: 0 4px 14px rgba(124, 92, 246, .4); }
 .btn.primary:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; }
+.btn.danger { color: #c93f3a; border-color: #efcfcd; background: #fff9f8; }
+.btn.danger:hover { color: #a82f2b; background: #fcebea; }
+.btn.danger:disabled { opacity: .55; cursor: wait; }
 .btn.big { width: 100%; padding: 9px 0; font-size: 13.5px; }
 .generate-actions { display: grid; grid-template-columns: minmax(0, 1fr) 40px; width: 100%; min-width: 0; gap: 8px; align-items: stretch; }
 .generate-main { min-width: 0; padding: 9px 12px; font-size: 13.5px; }
@@ -271,6 +286,7 @@ select {
   font-size: 12.5px;
   padding: 6px 0;
 }
+.loading .cancel-job { margin-left: auto; flex-shrink: 0; }
 .spinner {
   width: 14px; height: 14px;
   border: 2px solid #e4dcff;

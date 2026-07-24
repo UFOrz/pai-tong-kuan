@@ -100,6 +100,7 @@ let albumWindowId = null;
 let searchTimer = 0;
 let pageLoadSeq = 0;
 let currentLanguage = 'zh';
+const ui = (key, vars = {}) => t(key, vars, currentLanguage);
 
 function recordExplanationVisible(rec) {
   const language = rec.explanationLanguage || (rec.promptZh ? 'zh' : '');
@@ -502,12 +503,12 @@ async function downloadRecords(list) {
     downloadBlob(await normalizeImageMime(list[0].blob), fileNameOf(list[0], 0, ext));
     return;
   }
-  showToast(`正在打包 ${list.length} 张图片…`);
+  showToast(ui('正在打包 {count} 张图片…', { count: list.length }));
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stem = `拍同款相册_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
   const batchCount = Math.ceil(list.length / ZIP_BATCH_SIZE);
-  if (batchCount > 1) showToast(`为降低内存占用，将下载 ${batchCount} 个 ZIP 分包；请允许多文件下载`);
+  if (batchCount > 1) showToast(ui('为降低内存占用，将下载 {count} 个 ZIP 分包；请允许多文件下载', { count: batchCount }));
   for (let start = 0; start < list.length; start += ZIP_BATCH_SIZE) {
     const batch = list.slice(start, start + ZIP_BATCH_SIZE);
     const usedNames = new Set();
@@ -565,9 +566,9 @@ els.btnDownloadSel.addEventListener('click', () => {
 els.btnDeleteSel.addEventListener('click', async () => {
   const n = selected.size;
   if (!n) return;
-  if (!await requestDeleteConfirmation(`确定删除选中的 ${n} 张图片吗？此操作不可恢复。`)) return;
+  if (!await requestDeleteConfirmation(ui('确定删除选中的 {count} 张图片吗？此操作不可恢复。', { count: n }))) return;
   await deleteRecords([...selected]);
-  showToast(`已删除 ${n} 张图片`);
+  showToast(ui('已删除 {count} 张图片', { count: n }));
 });
 
 els.btnOptions.addEventListener('click', async () => {
@@ -575,7 +576,7 @@ els.btnOptions.addEventListener('click', async () => {
     ok: false,
     error: e?.message || String(e)
   }));
-  if (!resp?.ok) showToast('打开设置失败：' + (resp?.error || '未知错误'));
+  if (!resp?.ok) showToast(ui('打开设置失败：{error}', { error: resp?.error || ui('未知错误') }));
 });
 
 els.searchInput.addEventListener('input', () => {
@@ -624,7 +625,7 @@ els.lbCompareToggle.addEventListener('click', () => {
 });
 els.lbAddCharacter.addEventListener('click', () => {
   void addCurrentImageToCharacters().catch((error) => {
-    showToast('添加到角色库失败：' + (error?.message || error));
+    showToast(ui('添加到角色库失败：{error}', { error: error?.message || error }));
   });
 });
 els.lbImgBox.addEventListener('pointermove', (e) => {
@@ -659,7 +660,7 @@ async function openPanelAction(action, extra = {}) {
   const rec = records.find((item) => item.id === currentLbId);
   if (!rec) return;
   const payload = { action, recordId: rec.id, ...extra, ts: Date.now() };
-  if (albumWindowId == null) return showToast('尚未取得当前窗口信息，请稍后重试');
+  if (albumWindowId == null) return showToast(ui('尚未取得当前窗口信息，请稍后重试'));
   const actionKey = scopedSessionKey('albumAction', albumWindowId);
   try {
     // 必须在点击事件的同步调用链内触发；经过 runtime.sendMessage 或任何 await 后
@@ -667,7 +668,7 @@ async function openPanelAction(action, extra = {}) {
     const openPromise = chrome.sidePanel.open({ windowId: albumWindowId });
     const storePromise = chrome.storage.session.set({ [actionKey]: payload });
     await Promise.all([openPromise, storePromise]);
-    showToast(action === 'regenerate' ? '已在侧边栏开始生成' : '已发送到侧边栏处理');
+    showToast(ui(action === 'regenerate' ? '已在侧边栏开始生成' : '已发送到侧边栏处理'));
   } catch (error) {
     // 不支持 sidePanel 或浏览器拒绝打开时，退化为扩展弹窗；任务已直接写入会话存储。
     try {
@@ -676,9 +677,11 @@ async function openPanelAction(action, extra = {}) {
         url: chrome.runtime.getURL(`panel/panel.html?windowId=${albumWindowId}`),
         type: 'popup', width: 440, height: 740
       });
-      showToast('已在独立窗口中打开');
+      showToast(ui('已在独立窗口中打开'));
     } catch (fallbackError) {
-      showToast('打开侧边栏失败：' + (fallbackError?.message || error?.message || '未知错误'));
+      showToast(ui('打开侧边栏失败：{error}', {
+        error: fallbackError?.message || error?.message || ui('未知错误')
+      }));
     }
   }
 }

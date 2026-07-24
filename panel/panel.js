@@ -78,12 +78,15 @@ const els = {
   btnGenerate: $('btnGenerate'),
   genProgress: $('genProgress'),
   genText: $('genText'),
+  btnCancelGenerate: $('btnCancelGenerate'),
   genDone: $('genDone'),
   genError: $('genError'),
   replaceProgress: $('replaceProgress'),
   replaceProgressText: $('replaceProgressText'),
+  btnCancelReplace: $('btnCancelReplace'),
   replaceDone: $('replaceDone'),
   replaceError: $('replaceError'),
+  btnCancelGroup: $('btnCancelGroup'),
   resImg: $('resImg'),
   resMeta: $('resMeta'),
   btnDownload: $('btnDownload'),
@@ -182,7 +185,7 @@ function saveDefaultModel(type, select) {
   }).then(() => {
     showToast(ui(type === 'vision' ? '已设为默认反推模型' : '已设为默认生图模型'));
   }).catch((error) => {
-    showToast('保存默认模型失败：' + (error?.message || error));
+    showToast(ui('保存默认模型失败：{error}', { error: error?.message || error }));
   });
   return settingsWriteChain;
 }
@@ -216,7 +219,7 @@ async function removeWindowSession(kind) {
 }
 
 function sendQuietly(msg) {
-  void send(msg).catch((e) => showToast('操作失败：' + (e?.message || e)));
+  void send(msg).catch((e) => showToast(ui('操作失败：{error}', { error: e?.message || e })));
 }
 
 function showToast(text) {
@@ -227,6 +230,51 @@ function showToast(text) {
 }
 
 function show(el, yes = true) { el.hidden = !yes; }
+
+function localizedJobStage(stage = '') {
+  const patterns = [
+    [/^正在基于当前大图生成主体锚点 (\d+)\/(\d+)$/, '正在基于当前大图生成主体锚点 {current}/{total}'],
+    [/^正在基于主体锚点生成第 (\d+)\/(\d+) 张$/, '正在基于主体锚点生成第 {current}/{total} 张'],
+    [/^正在使用文生图生成第 (\d+)\/(\d+) 张$/, '正在使用文生图生成第 {current}/{total} 张'],
+    [/^当前模型不支持图生图，正在使用文生图生成第 (\d+)\/(\d+) 张$/, '当前模型不支持图生图，正在使用文生图生成第 {current}/{total} 张']
+  ];
+  for (const [pattern, key] of patterns) {
+    const match = stage.match(pattern);
+    if (match) return ui(key, { current: match[1], total: match[2] });
+  }
+  return ui(stage);
+}
+
+function setCancelControls(activeKind = '', cancelRequested = false) {
+  show(els.btnCancelGroup, activeKind === 'group');
+  for (const button of [els.btnCancelGenerate, els.btnCancelReplace, els.btnCancelGroup]) {
+    button.disabled = cancelRequested;
+  }
+}
+
+async function cancelCurrentJob(event) {
+  const buttons = [els.btnCancelGenerate, els.btnCancelReplace, els.btnCancelGroup];
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const response = await send({ type: 'ir.job.cancel' });
+    if (!response?.ok) {
+      showToast(ui(response?.error || '当前没有可停止的任务'));
+      buttons.forEach((button) => { button.disabled = false; });
+      return;
+    }
+    if (event?.currentTarget === els.btnCancelGroup) {
+      $('batchStatus').textContent = ui('正在停止任务…');
+    } else if (event?.currentTarget === els.btnCancelReplace) {
+      els.replaceProgressText.textContent = ui('正在停止任务…');
+    } else {
+      els.genText.textContent = ui('正在停止任务…');
+    }
+    showToast(ui('已请求停止任务；当前已提交的图片仍会完成并保存'));
+  } catch (error) {
+    showToast(ui('停止任务失败：{error}', { error: error?.message || error }));
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
 
 function setReplacePanel(visible) {
   show(els.secReplace, visible);
@@ -398,7 +446,7 @@ async function refreshPending() {
     else renderEmpty();
   } catch (e) {
     renderEmpty();
-    showToast('读取图片状态失败：' + (e?.message || e));
+    showToast(ui('读取图片状态失败：{error}', { error: e?.message || e }));
   }
 }
 
@@ -434,7 +482,7 @@ function applySource(s) {
       };
       els.srcImg.src = s.previewUrl;
     }
-    els.srcStatus.textContent = '正在处理当前页面图片…';
+    els.srcStatus.textContent = ui('正在处理当前页面图片…');
     els.srcStatus.classList.remove('err');
     show(els.secPrompt, false);
     show(els.secGen, false);
@@ -445,7 +493,7 @@ function applySource(s) {
     els.srcImg.removeAttribute('src');
     show(els.srcImg, false);
     show(els.srcPlaceholder, false);
-    els.srcStatus.textContent = '图片获取失败：' + (s.error || '未知错误');
+    els.srcStatus.textContent = ui('图片获取失败：{error}', { error: s.error || ui('未知错误') });
     els.srcStatus.classList.add('err');
     show(els.secPrompt, false);
     show(els.secGen, false);
@@ -455,7 +503,7 @@ function applySource(s) {
     els.srcImg.src = s.dataUrl;
     show(els.srcPlaceholder, false);
     show(els.srcImg, true);
-    els.srcStatus.textContent = `原图尺寸 ${s.width}×${s.height}`;
+    els.srcStatus.textContent = ui('原图尺寸 {width}×{height}', { width: s.width, height: s.height });
     els.srcStatus.classList.remove('err');
     show(els.secPrompt, true);
     show(els.secGen, true);
@@ -463,7 +511,7 @@ function applySource(s) {
     if (shouldAutoReverse(s, becameReady)) {
       void consumeNewSourceAndReverse(s);
     } else if (becameReady) {
-      void restoreTask(s).catch((e) => showToast('恢复上次任务失败：' + (e?.message || e)));
+      void restoreTask(s).catch((e) => showToast(ui('恢复上次任务失败：{error}', { error: e?.message || e })));
     }
   }
 }
@@ -491,8 +539,8 @@ chrome.storage.session.onChanged.addListener((changes) => {
   if (feedbackChange?.newValue) {
     const feedback = feedbackChange.newValue;
     showToast(feedback.ok
-      ? `区域截图完成：${feedback.width}×${feedback.height}`
-      : `区域截图失败：${feedback.error || '未知错误'}`);
+      ? ui('区域截图完成：{width}×{height}', { width: feedback.width, height: feedback.height })
+      : ui('区域截图失败：{error}', { error: feedback.error || ui('未知错误') }));
   }
   if (jobChange?.newValue) renderBackgroundJob(jobChange.newValue);
   if (reverseJobChange?.newValue) renderBackgroundReverseJob(reverseJobChange.newValue);
@@ -555,13 +603,13 @@ async function autoReverse() {
       void persistTask();
     } else {
       els.taPrompt.placeholder = '';
-      els.reverseError.textContent = '反推失败：' + (resp?.error || '未知错误');
+      els.reverseError.textContent = ui('反推失败：{error}', { error: resp?.error || ui('未知错误') });
       show(els.reverseError, true);
     }
   } catch (e) {
     if (opId === reverseSeq && sourceKey(source) === currentSourceKey) {
       els.taPrompt.placeholder = '';
-      els.reverseError.textContent = '反推失败：' + (e?.message || e);
+      els.reverseError.textContent = ui('反推失败：{error}', { error: e?.message || e });
       show(els.reverseError, true);
     }
   } finally {
@@ -634,7 +682,7 @@ function renderBackgroundReverseJob(job) {
     els.taPrompt.placeholder = '';
     show(els.zhNote, false);
     show(els.reverseDone, false);
-    els.reverseError.textContent = '反推失败：' + (job.error || '未知错误');
+    els.reverseError.textContent = ui('反推失败：{error}', { error: job.error || ui('未知错误') });
     show(els.reverseError, true);
   }
 }
@@ -673,7 +721,7 @@ async function generate() {
     item.platformId === imageSelection.platformId && item.model === imageSelection.model);
   const useSourceImage = requiresSourceImage(imageChoice);
   if (useSourceImage && !sourceSnapshot?.dataUrl) {
-    showToast('当前生图模型需要来源图片，请先选择图片');
+    showToast(ui('当前生图模型需要来源图片，请先选择图片'));
     return;
   }
   void persistTask();
@@ -684,6 +732,7 @@ async function generate() {
   show(els.genError, false);
   // 点击生成后才显示转圈动画
   show(els.genProgress, true);
+  setCancelControls('generate');
   const t0 = Date.now();
   const timer = setInterval(() => {
     els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: Math.round((Date.now() - t0) / 1000) });
@@ -716,15 +765,19 @@ async function generate() {
     const sourceChanged = sourceKey(source) !== sourceKey(sourceSnapshot);
     if (!resp?.ok) {
       if (sourceChanged) {
-        showToast('上一张图片生成失败：' + (resp?.error || '未知错误'));
+        showToast(ui('上一张图片生成失败：{error}', { error: resp?.error || ui('未知错误') }));
         return;
       }
-      els.genError.textContent = '生成失败：' + (resp?.error || '未知错误');
+      els.genError.textContent = ui('生成失败：{error}', { error: resp?.error || ui('未知错误') });
       show(els.genError, true);
       return;
     }
+    if (resp.cancelled && !resp.dataUrl) {
+      showToast(ui('任务已停止'));
+      return;
+    }
     if (sourceChanged) {
-      showToast('上一张图片的生成已完成，已保存到相册');
+      showToast(ui('上一张图片的生成已完成，已保存到相册'));
       return;
     }
     revokeRestoredResultUrl();
@@ -737,15 +790,17 @@ async function generate() {
     show(els.genDone, true);
     lastAlbumRecordId = resp.albumRecordId || '';
     if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
+    if (resp.cancelled) showToast(ui('任务已停止，当前已完成的图片已保存'));
     els.resImg.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
-    els.genError.textContent = '生成失败：' + (e?.message || e);
+    els.genError.textContent = ui('生成失败：{error}', { error: e?.message || e });
     show(els.genError, true);
   } finally {
     clearInterval(timer);
     generating = false;
     els.btnGenerate.disabled = false;
     show(els.genProgress, false);
+    setCancelControls('');
   }
 }
 
@@ -754,7 +809,7 @@ async function generate() {
 async function capturePage() {
   showToast(ui('请在网页中拖动框选截图区域，按 Esc 可取消'));
   const resp = await send({ type: 'ir.startRegionCapture' });
-  if (!resp?.ok) showToast('无法开始截图：' + (resp?.error || '请确认当前是普通网页'));
+  if (!resp?.ok) showToast(ui('无法开始截图：{error}', { error: resp?.error || ui('请确认当前是普通网页') }));
 }
 
 async function refreshCharacters() {
@@ -780,7 +835,9 @@ async function saveCharacter(item) {
 
 function renderCharacterPicker() {
   const picker = $('characterPicker');
-  picker.innerHTML = characters.length ? '' : '<button class="btn ghost" id="emptyAddCharacter" type="button">＋ 先添加角色或物品</button>';
+  picker.innerHTML = characters.length
+    ? ''
+    : `<button class="btn ghost" id="emptyAddCharacter" type="button">${ui('＋ 先添加角色或物品')}</button>`;
   for (const item of characters) {
     const button = document.createElement('button');
     button.className = 'character-choice' + (item.id === selectedCharacterId ? ' selected' : '');
@@ -788,8 +845,10 @@ function renderCharacterPicker() {
     button.innerHTML = `<img alt=""><span></span>`;
     const image = button.querySelector('img');
     image.src = characterUrl(item);
-    button.querySelector('span').textContent = item.name || '未命名素材';
-    button.title = item.id === selectedCharacterId ? '再次点击查看大图' : `选择${item.name || '素材'}`;
+    button.querySelector('span').textContent = item.name || ui('未命名素材');
+    button.title = item.id === selectedCharacterId
+      ? ui('再次点击查看大图')
+      : ui('选择 {name}', { name: item.name || ui('素材') });
     button.addEventListener('click', () => {
       if (selectedCharacterId === item.id) {
         openCharacterPreview(item);
@@ -805,21 +864,21 @@ function renderCharacterPicker() {
 
 function renderCharacterManager() {
   const list = $('characterList');
-  list.innerHTML = characters.length ? '' : '<p class="feature-desc">还没有素材，点击上方添加图片。</p>';
+  list.innerHTML = characters.length ? '' : `<p class="feature-desc">${ui('还没有素材，点击上方添加图片。')}</p>`;
   for (const item of characters) {
     const card = document.createElement('article');
     card.className = 'character-item';
-    card.innerHTML = '<button class="character-thumb" type="button" title="查看大图" aria-label="查看素材大图"><img alt=""></button><footer><input aria-label="素材名称"><button type="button" title="删除">×</button></footer>';
+    card.innerHTML = `<button class="character-thumb" type="button" title="${ui('查看大图')}" aria-label="${ui('查看素材大图')}"><img alt=""></button><footer><input aria-label="${ui('素材名称')}"><button type="button" title="${ui('删除')}">×</button></footer>`;
     const previewButton = card.querySelector('.character-thumb');
     const image = card.querySelector('.character-thumb img');
     const nameInput = card.querySelector('footer input');
     const deleteButton = card.querySelector('footer button');
     image.src = characterUrl(item);
-    image.alt = item.name || '角色或物品素材';
+    image.alt = item.name || ui('角色或物品素材');
     previewButton.addEventListener('click', () => openCharacterPreview(item));
     nameInput.value = item.name || '';
     nameInput.addEventListener('change', async (e) => {
-      item.name = e.target.value.trim() || '未命名素材';
+      item.name = e.target.value.trim() || ui('未命名素材');
       await saveCharacter(item);
       renderCharacterPicker();
     });
@@ -833,7 +892,7 @@ function renderCharacterManager() {
 }
 
 function openCharacterPreview(item) {
-  const name = item.name || '未命名素材';
+  const name = item.name || ui('未命名素材');
   $('characterPreviewImg').src = characterUrl(item);
   $('characterPreviewImg').alt = name;
   $('characterPreviewName').textContent = name;
@@ -850,8 +909,8 @@ function openCharacterManager() { $('characterDialog').hidden = false; void refr
 function closeCharacterManager() { closeCharacterPreview(); $('characterDialog').hidden = true; }
 
 async function replaceCharacter() {
-  if (generating) return showToast('当前已有生成任务进行中');
-  if (!source?.dataUrl) return showToast('请先选择需要修改的图片');
+  if (generating) return showToast(ui('当前已有生成任务进行中'));
+  if (!source?.dataUrl) return showToast(ui('请先选择需要修改的图片'));
   const character = await getCharacterById(selectedCharacterId);
   if (!character) return openCharacterManager();
   const instruction = $('replaceInstruction').value.trim() || DEFAULT_REPLACE_INSTRUCTION;
@@ -866,10 +925,13 @@ async function replaceCharacter() {
   show(els.replaceDone, false);
   show(els.replaceError, false);
   show(els.replaceProgress, true);
-  els.replaceProgressText.textContent = '正在替换角色或者物品…';
+  setCancelControls('replacement');
+  els.replaceProgressText.textContent = ui('正在替换角色或者物品…');
   const startedAt = Date.now();
   const progressTimer = setInterval(() => {
-    els.replaceProgressText.textContent = `正在替换角色或者物品，已等待 ${Math.round((Date.now() - startedAt) / 1000)} 秒…`;
+    els.replaceProgressText.textContent = ui('正在替换角色或者物品，已等待 {seconds} 秒…', {
+      seconds: Math.round((Date.now() - startedAt) / 1000)
+    });
   }, 1000);
   try {
     const resp = await send({ type: 'ir.job.edit', payload: {
@@ -885,14 +947,19 @@ async function replaceCharacter() {
       jobLabel: '正在替换角色或者物品'
     }});
     if (!resp?.ok) throw new Error(resp?.error || '替换失败');
+    if (resp.cancelled && !resp.dataUrl) {
+      showToast(ui('任务已停止'));
+      return;
+    }
     if (sourceKey(source) !== sourceKey(sourceSnapshot)) {
-      showToast('上一张图片的替换已完成，已保存到相册');
+      showToast(ui('上一张图片的替换已完成，已保存到相册'));
       return;
     }
     presentSavedResult(resp, '角色/物品替换', false);
     show(els.replaceDone, true);
+    if (resp.cancelled) showToast(ui('任务已停止，当前已完成的图片已保存'));
   } catch (error) {
-    els.replaceError.textContent = '替换失败：' + (error?.message || error);
+    els.replaceError.textContent = ui('替换失败：{error}', { error: error?.message || error });
     show(els.replaceError, true);
   } finally {
     clearInterval(progressTimer);
@@ -900,6 +967,7 @@ async function replaceCharacter() {
     generating = false;
     els.btnGenerate.disabled = false;
     show(els.replaceProgress, false);
+    setCancelControls('');
   }
 }
 
@@ -912,7 +980,7 @@ function presentSavedResult(resp, label = '生成', showGenerationDone = true) {
   show(els.saveState, Boolean(resp.albumRecordId));
   lastAlbumRecordId = resp.albumRecordId || '';
   if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
-  showToast(`${label}完成，已保存到相册`);
+  showToast(ui('{label}完成，已保存到相册', { label: ui(label) }));
   els.secResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -1007,10 +1075,19 @@ function updateVisibleJobClock() {
   const job = visibleJobState;
   if (!job || job.status !== 'running') return;
   const elapsed = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000));
+  if (job.cancelRequested) {
+    if (job.label === 'group') $('batchStatus').textContent = ui('正在停止任务…');
+    else if (job.label === 'replacement') els.replaceProgressText.textContent = ui('正在停止任务…');
+    else els.genText.textContent = ui('正在停止任务…');
+    return;
+  }
   if (job.label === 'group') {
     $('batchStatus').textContent = ui('正在生成组图，已等待 {seconds} 秒…', { seconds: elapsed });
   } else if (job.label === 'replacement') {
-    els.replaceProgressText.textContent = `${job.stage || '正在替换角色或者物品'}，已等待 ${elapsed} 秒…`;
+    els.replaceProgressText.textContent = ui('{stage}，已等待 {seconds} 秒…', {
+      stage: localizedJobStage(job.stage || '正在替换角色或者物品'),
+      seconds: elapsed
+    });
   } else {
     els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: elapsed });
   }
@@ -1038,17 +1115,32 @@ async function renderBackgroundJob(job) {
     if (job.status === 'running') {
       generating = true;
       els.btnGenerate.disabled = true;
+      setCancelControls('group', Boolean(job.cancelRequested));
       $('batchStatus').textContent = ui('正在生成组图，已等待 {seconds} 秒…', { seconds: elapsed });
     } else if (job.status === 'completed') {
       generating = false;
       els.btnGenerate.disabled = false;
       showLatestGroupResult(records.at(-1));
-      $('batchStatus').textContent = `${records.length} 张组图已完成并保存到相册；用时 ${elapsed} 秒。`;
+      $('batchStatus').textContent = ui('{count} 张组图已完成并保存到相册；用时 {seconds} 秒。', {
+        count: records.length,
+        seconds: elapsed
+      });
+      setCancelControls('');
+    } else if (job.status === 'cancelled') {
+      generating = false;
+      els.btnGenerate.disabled = false;
+      if (records.length) showLatestGroupResult(records.at(-1));
+      $('batchStatus').textContent = ui('任务已停止，已保留 {count} 张图片', { count: records.length });
+      setCancelControls('');
     } else if (job.status === 'failed') {
       generating = false;
       els.btnGenerate.disabled = false;
       if (records.length) showLatestGroupResult(records.at(-1));
-      $('batchStatus').textContent = `组图生成中断：${job.error || '未知错误'}${records.length ? `；已保留前 ${records.length} 张。` : ''}`;
+      $('batchStatus').textContent = ui('组图生成中断：{error}{saved}', {
+        error: job.error || ui('未知错误'),
+        saved: records.length ? ui('；已保留前 {count} 张。', { count: records.length }) : ''
+      });
+      setCancelControls('');
     }
     return;
   }
@@ -1058,11 +1150,19 @@ async function renderBackgroundJob(job) {
     generating = true;
     els.btnGenerate.disabled = true;
     if (isReplacement) {
+      setCancelControls('replacement', Boolean(job.cancelRequested));
       show(els.replaceProgress, true);
-      els.replaceProgressText.textContent = `${job.stage || '正在替换角色或者物品'}，已等待 ${elapsed} 秒…`;
+      els.replaceProgressText.textContent = ui('{stage}，已等待 {seconds} 秒…', {
+        stage: localizedJobStage(job.stage || '正在替换角色或者物品'),
+        seconds: elapsed
+      });
     } else {
+      setCancelControls('generate', Boolean(job.cancelRequested));
       show(els.genProgress, true);
-      els.genText.textContent = `${job.stage || '正在生成'}，已等待 ${elapsed} 秒…`;
+      els.genText.textContent = ui('{stage}，已等待 {seconds} 秒…', {
+        stage: localizedJobStage(job.stage || '正在生成'),
+        seconds: elapsed
+      });
     }
     return;
   }
@@ -1071,29 +1171,39 @@ async function renderBackgroundJob(job) {
   els.btnGenerate.disabled = false;
   show(els.genProgress, false);
   show(els.replaceProgress, false);
+  setCancelControls('');
   if (job.status === 'completed' && job.lastRecordId) {
     const rec = await getById(job.lastRecordId).catch(() => null);
     await showSavedRecord(rec, !isReplacement);
     if (isReplacement) show(els.replaceDone, true);
   } else if (job.status === 'failed') {
     const target = isReplacement ? els.replaceError : els.genError;
-    target.textContent = `${isReplacement ? '替换' : '生成'}失败：${job.error || '未知错误'}`;
+    target.textContent = ui('{action}失败：{error}', {
+      action: ui(isReplacement ? '替换' : '生成'),
+      error: job.error || ui('未知错误')
+    });
     show(target, true);
+  } else if (job.status === 'cancelled') {
+    if (job.lastRecordId) {
+      const rec = await getById(job.lastRecordId).catch(() => null);
+      await showSavedRecord(rec, !isReplacement);
+    }
+    showToast(ui(job.lastRecordId ? '任务已停止，当前已完成的图片已保存' : '任务已停止'));
   }
 }
 
 async function generateGroup(requestedCount) {
   if (!privacyConsentGranted) { renderPrivacyRequired(); return; }
   const prompt = els.taPrompt.value.trim();
-  if (!prompt) return showToast('缺少原作品提示词');
-  if (generating) return showToast('当前已有生成任务进行中');
+  if (!prompt) return showToast(ui('缺少原作品提示词'));
+  if (generating) return showToast(ui('当前已有生成任务进行中'));
 
   const count = [2, 4, 6, 8].includes(Number(requestedCount)) ? Number(requestedCount) : 4;
   const initialSelection = selectedModel(els.selImageModel);
   const editSelection = groupEditSelection();
   const useImageEdit = Boolean(editSelection);
   const sourceSnapshot = source ? { ...source } : null;
-  if (useImageEdit && !sourceSnapshot?.dataUrl) return showToast('缺少组图来源大图，请从相册大图重新发起');
+  if (useImageEdit && !sourceSnapshot?.dataUrl) return showToast(ui('缺少组图来源大图，请从相册大图重新发起'));
 
   const sourcePromptSnapshot = reversedPrompt || prompt;
   const promptZhSnapshot = reversedPromptZh;
@@ -1101,11 +1211,14 @@ async function generateGroup(requestedCount) {
   const ratio = els.selRatio.value;
   const startedAt = Date.now();
   let groupStage = useImageEdit
-    ? `正在基于当前大图生成主体锚点 1/${count}`
-    : `当前模型不支持图生图，正在使用文生图生成第 1/${count} 张`;
+    ? ui('正在基于当前大图生成主体锚点 {current}/{total}', { current: 1, total: count })
+    : ui('当前模型不支持图生图，正在使用文生图生成第 {current}/{total} 张', { current: 1, total: count });
   const elapsedSeconds = () => Math.round((Date.now() - startedAt) / 1000);
   const renderGroupProgress = () => {
-    $('batchStatus').textContent = `${groupStage}，${ui('已等待 {seconds} 秒…', { seconds: elapsedSeconds() })}`;
+    $('batchStatus').textContent = ui('{stage}，已等待 {seconds} 秒…', {
+      stage: groupStage,
+      seconds: elapsedSeconds()
+    });
   };
   generating = true;
   els.btnGenerate.disabled = true;
@@ -1115,9 +1228,10 @@ async function generateGroup(requestedCount) {
   clearInterval(visibleJobTimer);
   $('batchResults').innerHTML = '';
   $('batchStatus').classList.add('batch-running');
+  setCancelControls('group');
   renderGroupProgress();
   const groupTimer = 0; // 后台 job 状态负责持续计时，关闭并重开侧边栏也能恢复。
-  if (!useImageEdit) showToast('当前模型不支持图生图，已自动切换为文生图组图');
+  if (!useImageEdit) showToast(ui('当前模型不支持图生图，已自动切换为文生图组图'));
   els.secBatch.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
   try {
@@ -1136,24 +1250,30 @@ async function generateGroup(requestedCount) {
     if (sourceKey(source) !== sourceKey(sourceSnapshot)) {
       const saved = response?.recordIds?.length || 0;
       showToast(response?.ok
-        ? `上一张图片的 ${saved} 张组图已完成并保存到相册`
-        : `上一张图片的组图已中断，已保留 ${saved} 张`);
+        ? ui('上一张图片的 {count} 张组图已完成并保存到相册', { count: saved })
+        : ui('上一张图片的组图已中断，已保留 {count} 张', { count: saved }));
       return;
     }
     const savedRecords = await loadJobRecords(response?.recordIds || []);
     savedRecords.forEach((record, index) => appendGroupPreview(record, index + 1, count));
     if (!response?.ok) throw new Error(response?.error || '组图生成失败');
+    if (response.cancelled) {
+      showLatestGroupResult(savedRecords.at(-1));
+      $('batchStatus').textContent = ui('任务已停止，已保留 {count} 张图片', { count: savedRecords.length });
+      showToast(ui('任务已停止，已保留 {count} 张图片', { count: savedRecords.length }));
+      return;
+    }
     showLatestGroupResult(savedRecords.at(-1));
     if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
     clearInterval(groupTimer);
     $('batchStatus').textContent = useImageEdit
-      ? `${count} 张主体锚定组图已全部生成，并分别保存到相册；用时 ${elapsedSeconds()} 秒。`
-      : `${count} 张文生图组图已全部生成，并分别保存到相册；用时 ${elapsedSeconds()} 秒。`;
-    showToast(`组图完成：已保存 ${count} 张`);
+      ? ui('{count} 张主体锚定组图已全部生成，并分别保存到相册；用时 {seconds} 秒。', { count, seconds: elapsedSeconds() })
+      : ui('{count} 张文生图组图已全部生成，并分别保存到相册；用时 {seconds} 秒。', { count, seconds: elapsedSeconds() });
+    showToast(ui('组图完成：已保存 {count} 张', { count }));
   } catch (error) {
     clearInterval(groupTimer);
     if (sourceKey(source) !== sourceKey(sourceSnapshot)) {
-      showToast('上一张图片的组图任务已结束，请到相册查看已保存结果');
+      showToast(ui('上一张图片的组图任务已结束，请到相册查看已保存结果'));
       return;
     }
     const job = await getWindowSession('job').catch(() => null);
@@ -1164,13 +1284,20 @@ async function generateGroup(requestedCount) {
       showLatestGroupResult(savedRecords.at(-1));
       if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
     }
-    $('batchStatus').textContent = `组图生成中断（已等待 ${elapsedSeconds()} 秒）：${error?.message || error}${saved ? `；已保留并保存前 ${saved} 张。` : ''}`;
-    showToast(saved ? `已保存前 ${saved} 张，后续生成失败` : '组图生成失败');
+    $('batchStatus').textContent = ui('组图生成中断（已等待 {seconds} 秒）：{error}{saved}', {
+      seconds: elapsedSeconds(),
+      error: error?.message || error,
+      saved: saved ? ui('；已保留并保存前 {count} 张。', { count: saved }) : ''
+    });
+    showToast(saved
+      ? ui('已保存前 {count} 张，后续生成失败', { count: saved })
+      : ui('组图生成失败'));
   } finally {
     clearInterval(groupTimer);
     $('batchStatus').classList.remove('batch-running');
     generating = false;
     els.btnGenerate.disabled = false;
+    setCancelControls('');
   }
 }
 
@@ -1179,7 +1306,7 @@ async function handleAlbumAction() {
   if (!albumAction?.recordId) return;
   await removeWindowSession('albumAction');
   const rec = await getById(albumAction.recordId);
-  if (!rec) return showToast('未找到相册作品');
+  if (!rec) return showToast(ui('未找到相册作品'));
   const dataUrl = await blobToDataUrl(rec.blob);
   const prepared = { requestId: crypto.randomUUID(), ts: Date.now(), status: 'ready', needsReverse: false,
     src: rec.srcUrl || '', pageUrl: rec.pageUrl || '', pageTitle: '来自拍同款相册', dataUrl,
@@ -1212,7 +1339,7 @@ function downloadCurrent() {
 
 function openCurrentResultInAlbum() {
   if (!lastAlbumRecordId) {
-    showToast('这张图片还未保存到相册');
+    showToast(ui('这张图片还未保存到相册'));
     return;
   }
   sendQuietly({ type: 'ir.openAlbum', payload: { recordId: lastAlbumRecordId } });
@@ -1229,6 +1356,9 @@ els.btnCopyPrompt.addEventListener('click', async () => {
 });
 els.btnGenerate.addEventListener('click', generate);
 els.btnRegen.addEventListener('click', generate);
+els.btnCancelGenerate.addEventListener('click', cancelCurrentJob);
+els.btnCancelReplace.addEventListener('click', cancelCurrentJob);
+els.btnCancelGroup.addEventListener('click', cancelCurrentJob);
 els.btnDownload.addEventListener('click', downloadCurrent);
 els.resImg.addEventListener('click', openCurrentResultInAlbum);
 els.resImg.addEventListener('keydown', (event) => {
@@ -1244,15 +1374,15 @@ $('btnMagicToggle').addEventListener('click', async (e) => {
   button.disabled = true;
   try {
     const resp = await send({ type: 'ir.setMagicButtonVisible', payload: { visible } });
-    if (!resp?.ok) return showToast(resp?.error || '设置失败');
+    if (!resp?.ok) return showToast(resp?.error || ui('设置失败'));
     button.setAttribute('aria-pressed', String(resp.visible));
     button.classList.toggle('active', resp.visible);
     const actionLabel = ui(resp.visible ? '隐藏魔法按钮' : '显示魔法按钮');
     button.dataset.tooltip = actionLabel;
     button.setAttribute('aria-label', actionLabel);
     showToast(resp.visible
-      ? (resp.delivered ? '网页魔法按钮已恢复' : '已开启；请在普通网页图片上移动鼠标')
-      : '网页魔法按钮已隐藏');
+      ? ui(resp.delivered ? '网页魔法按钮已恢复' : '已开启；请在普通网页图片上移动鼠标')
+      : ui('网页魔法按钮已隐藏'));
   } finally {
     button.disabled = false;
   }
@@ -1283,7 +1413,7 @@ $('characterFile').addEventListener('change', async (e) => {
   await addCharacter({
     id: crypto.randomUUID(),
     createdAt: Date.now(),
-    name: file.name.replace(/\.[^.]+$/, '') || '新素材',
+    name: file.name.replace(/\.[^.]+$/, '') || ui('新素材'),
     blob: file
   });
   e.target.value = '';
@@ -1322,7 +1452,7 @@ $('btnPrivacyAgree').addEventListener('click', async () => {
     show(els.secPrivacy, false);
     await refreshPending();
   } catch (error) {
-    showToast('保存授权失败：' + (error?.message || error));
+    showToast(ui('保存授权失败：{error}', { error: error?.message || error }));
   }
 });
 
@@ -1368,7 +1498,7 @@ async function resolvePanelWindowId() {
     if (job) await renderBackgroundJob(job);
   } catch (e) {
     renderEmpty();
-    showToast('初始化失败：' + (e?.message || e));
+    showToast(ui('初始化失败：{error}', { error: e?.message || e }));
   }
 })();
 
