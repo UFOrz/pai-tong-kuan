@@ -2,9 +2,15 @@
 
 import { listModelChoices, loadSettings, requiresSourceImage, saveSettings, supportsImageEdit } from '../lib/settings.js';
 import { getById, addCharacter, getCharacters, getCharacterById, removeCharacters } from '../lib/db.js';
-import { normalizedWindowId, scopedSessionKey, sourceKey, shouldAutoReverse } from '../lib/task-state.js';
+import {
+  normalizedWindowId,
+  scopedSessionKey,
+  shouldAutoReverse,
+  shouldRenderSurpriseSessionTask,
+  sourceKey
+} from '../lib/task-state.js';
 import { grantPrivacyConsent, hasPrivacyConsent } from '../lib/privacy.js';
-import { explanationLabel, localizeDocument, resolveLanguage, t } from '../lib/i18n.js';
+import { explanationLabel, localizeDocument, localizeRuntimeError, resolveLanguage, t } from '../lib/i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,6 +74,10 @@ const els = {
   reverseLoading: $('reverseLoading'),
   reverseDone: $('reverseDone'),
   reverseError: $('reverseError'),
+  surpriseNotice: $('surpriseNotice'),
+  surpriseProfile: $('surpriseProfile'),
+  surpriseAiLoading: $('surpriseAiLoading'),
+  visionModelLabel: $('visionModelLabel'),
   taPrompt: $('taPrompt'),
   zhNote: $('zhNote'),
   selVisionModel: $('selVisionModel'),
@@ -78,12 +88,10 @@ const els = {
   btnGenerate: $('btnGenerate'),
   genProgress: $('genProgress'),
   genText: $('genText'),
-  btnCancelGenerate: $('btnCancelGenerate'),
   genDone: $('genDone'),
   genError: $('genError'),
   replaceProgress: $('replaceProgress'),
   replaceProgressText: $('replaceProgressText'),
-  btnCancelReplace: $('btnCancelReplace'),
   replaceDone: $('replaceDone'),
   replaceError: $('replaceError'),
   btnCancelGroup: $('btnCancelGroup'),
@@ -122,6 +130,12 @@ let visibleJobState = null;
 let visibleJobTimer = 0;
 let visibleReverseJobState = null;
 let visibleReverseJobTimer = 0;
+let regionCaptureActive = false;
+let surpriseMode = false;
+let surpriseGenerating = false;
+let currentSurpriseProfile = '';
+let currentSurpriseProfileLabel = '';
+let currentSurpriseExplanation = '';
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
 
 $('replaceInstruction').value = DEFAULT_REPLACE_INSTRUCTION;
@@ -173,6 +187,10 @@ function resetDefaultModels() {
 function saveDefaultModel(type, select) {
   const selection = selectedModel(select);
   if (!selection.platformId || !selection.model) return settingsWriteChain;
+  const appliesToNextSurprise =
+    type === 'vision' &&
+    surpriseMode &&
+    surpriseGenerating;
   settings = {
     ...settings,
     defaults: { ...(settings?.defaults || {}), [type]: selection }
@@ -183,7 +201,9 @@ function saveDefaultModel(type, select) {
     await saveSettings(latest);
     settings = latest;
   }).then(() => {
-    showToast(ui(type === 'vision' ? '已设为默认反推模型' : '已设为默认生图模型'));
+    showToast(ui(appliesToNextSurprise
+      ? '已保存为默认反推模型，将在下次惊喜生成时生效'
+      : type === 'vision' ? '已设为默认反推模型' : '已设为默认生图模型'));
   }).catch((error) => {
     showToast(ui('保存默认模型失败：{error}', { error: error?.message || error }));
   });
@@ -223,10 +243,12 @@ function sendQuietly(msg) {
 }
 
 function showToast(text) {
-  els.toast.textContent = text;
+  const content = String(text ?? '');
+  els.toast.textContent = content;
   els.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (els.toast.hidden = true), 2200);
+  const duration = Math.min(6500, Math.max(2200, 1800 + content.length * 55));
+  toastTimer = setTimeout(() => (els.toast.hidden = true), duration);
 }
 
 function show(el, yes = true) { el.hidden = !yes; }
@@ -247,38 +269,38 @@ function localizedJobStage(stage = '') {
 
 function setCancelControls(activeKind = '', cancelRequested = false) {
   show(els.btnCancelGroup, activeKind === 'group');
-  for (const button of [els.btnCancelGenerate, els.btnCancelReplace, els.btnCancelGroup]) {
-    button.disabled = cancelRequested;
-  }
+  els.btnCancelGroup.disabled = cancelRequested;
 }
 
-async function cancelCurrentJob(event) {
-  const buttons = [els.btnCancelGenerate, els.btnCancelReplace, els.btnCancelGroup];
-  buttons.forEach((button) => { button.disabled = true; });
+async function cancelGroupJob() {
+  els.btnCancelGroup.disabled = true;
   try {
     const response = await send({ type: 'ir.job.cancel' });
     if (!response?.ok) {
       showToast(ui(response?.error || '当前没有可停止的任务'));
-      buttons.forEach((button) => { button.disabled = false; });
+      els.btnCancelGroup.disabled = false;
       return;
     }
-    if (event?.currentTarget === els.btnCancelGroup) {
-      $('batchStatus').textContent = ui('正在停止任务…');
-    } else if (event?.currentTarget === els.btnCancelReplace) {
-      els.replaceProgressText.textContent = ui('正在停止任务…');
-    } else {
-      els.genText.textContent = ui('正在停止任务…');
-    }
+    $('batchStatus').textContent = ui('正在停止任务…');
     showToast(ui('已请求停止任务；当前已提交的图片仍会完成并保存'));
   } catch (error) {
     showToast(ui('停止任务失败：{error}', { error: error?.message || error }));
-    buttons.forEach((button) => { button.disabled = false; });
+    els.btnCancelGroup.disabled = false;
   }
 }
 
 function setReplacePanel(visible) {
   show(els.secReplace, visible);
   $('btnShowReplace').setAttribute('aria-expanded', String(visible));
+}
+
+function setReplaceAvailable(available) {
+  const button = $('btnShowReplace');
+  const key = available ? '替换角色/物品' : '惊喜模式下不可用';
+  button.setAttribute('aria-disabled', String(!available));
+  button.setAttribute('aria-label', ui(key));
+  button.dataset.tooltip = ui(key);
+  if (!available) setReplacePanel(false);
 }
 
 function blobToDataUrl(blob) {
@@ -313,6 +335,26 @@ function clearJobPreviewUrls() {
   renderedJobRecordIds.clear();
 }
 
+function setPromptLoadingLabel(key) {
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner';
+  els.reverseLoading.replaceChildren(spinner, document.createTextNode(ui(key)));
+}
+
+function setSurpriseButtonsDisabled(disabled) {
+  for (const id of ['btnSurprise', 'btnSurprise2', 'btnSurpriseAgain']) {
+    $(id).disabled = Boolean(disabled);
+  }
+}
+
+function setSurpriseModelState() {
+  const label = ui('AI反推模型');
+  els.visionModelLabel.setAttribute('aria-label', label);
+  els.visionModelLabel.dataset.tooltip = label;
+  els.visionModelLabel.querySelector('.field-label-text').textContent = label;
+  els.selVisionModel.disabled = !els.selVisionModel.value;
+}
+
 function resetTaskUI() {
   revokeRestoredResultUrl();
   visibleJobState = null;
@@ -324,6 +366,11 @@ function resetTaskUI() {
   reversedPrompt = '';
   reversedPromptZh = '';
   reversedPromptLanguage = '';
+  surpriseMode = false;
+  surpriseGenerating = false;
+  currentSurpriseProfile = '';
+  currentSurpriseProfileLabel = '';
+  currentSurpriseExplanation = '';
   lastResult = null;
   lastAlbumRecordId = '';
   els.taPrompt.value = '';
@@ -338,6 +385,13 @@ function resetTaskUI() {
   show(els.reverseDone, false);
   show(els.reverseError, false);
   show(els.reverseLoading, false);
+  show(els.surpriseAiLoading, false);
+  setPromptLoadingLabel('正在反推提示词…');
+  setSurpriseButtonsDisabled(false);
+  setSurpriseModelState();
+  setReplaceAvailable(true);
+  els.secPrompt.classList.remove('surprise-active');
+  show(els.surpriseNotice, false);
   setReplacePanel(false);
   show(els.replaceProgress, false);
   show(els.replaceDone, false);
@@ -351,6 +405,28 @@ function persistTask(patch = {}) {
   const taskSource = source;
   if (!taskSource || taskSource.status !== 'ready') return taskWriteChain;
   const expectedKey = sourceKey(taskSource);
+  if (surpriseMode) {
+    taskWriteChain = taskWriteChain.then(async () => {
+      if (!surpriseMode || sourceKey(source) !== expectedKey) return;
+      const existing = await getWindowSession('surpriseTask');
+      await setWindowSession('surpriseTask', {
+        ...(existing || {}),
+        active: true,
+        status: 'ready',
+        sourceRequestId: taskSource.requestId,
+        sourceTs: taskSource.ts,
+        prompt: els.taPrompt.value,
+        sourcePrompt: reversedPrompt || els.taPrompt.value,
+        explanation: currentSurpriseExplanation,
+        profile: currentSurpriseProfile,
+        profileLabel: currentSurpriseProfileLabel,
+        ratio: els.selRatio.value,
+        updatedAt: Date.now(),
+        ...patch
+      });
+    }).catch(() => {});
+    return taskWriteChain;
+  }
   taskWriteChain = taskWriteChain.then(async () => {
     if (sourceKey(source) !== expectedKey) return;
     const existing = await getWindowSession('panelTask');
@@ -450,10 +526,170 @@ async function refreshPending() {
   }
 }
 
+function renderSurpriseLoading(task = {}) {
+  resetTaskUI();
+  const ts = Number(task.sourceTs || task.updatedAt || Date.now());
+  const requestId = task.sourceRequestId || `surprise:${crypto.randomUUID()}`;
+  source = { requestId, ts, status: 'loading', surprise: true };
+  surpriseMode = true;
+  surpriseGenerating = true;
+  currentSurpriseProfile = 'ai';
+  currentSurpriseProfileLabel = 'AI 随机创作';
+  els.secPrompt.classList.add('surprise-active');
+  setSurpriseModelState();
+  setReplaceAvailable(false);
+  els.surpriseProfile.textContent = `${ui(currentSurpriseProfileLabel)} · ${ui('不使用参考图')}`;
+  els.taPrompt.value = '';
+  els.taPrompt.placeholder = ui('AI惊喜提示词生成中…');
+  show(els.surpriseNotice, true);
+  show(els.secEmpty, false);
+  show(els.secSource, false);
+  show(els.secPrompt, true);
+  show(els.secGen, false);
+  show(els.surpriseAiLoading, true);
+  setSurpriseButtonsDisabled(true);
+}
+
+function renderSurpriseFailure(task = {}) {
+  renderSurpriseLoading(task);
+  surpriseGenerating = false;
+  show(els.surpriseAiLoading, false);
+  setSurpriseModelState();
+  els.taPrompt.placeholder = '';
+  els.reverseError.textContent = ui('生成惊喜提示词失败：{error}', {
+    error: task.error || ui('未知错误')
+  });
+  show(els.reverseError, true);
+  setSurpriseButtonsDisabled(false);
+}
+
+async function renderSurpriseTask(task, { restoreResult = true } = {}) {
+  if (!task?.prompt) return false;
+  const ts = Number(task.sourceTs || task.updatedAt || Date.now());
+  const requestId = task.sourceRequestId || `surprise:${crypto.randomUUID()}`;
+  const preserveVisibleResult =
+    surpriseMode &&
+    !surpriseGenerating &&
+    sourceKey(source) === requestId;
+  if (!preserveVisibleResult) resetTaskUI();
+  source = { requestId, ts, status: 'ready', surprise: true };
+  surpriseMode = true;
+  surpriseGenerating = false;
+  currentSurpriseProfile = task.profile || '';
+  currentSurpriseProfileLabel = task.profileLabel || 'AI 随机创作';
+  currentSurpriseExplanation = task.explanation || '';
+  reversedPrompt = task.sourcePrompt || task.prompt;
+  reversedPromptZh = currentLanguage === 'zh' ? currentSurpriseExplanation : '';
+  reversedPromptLanguage = reversedPromptZh ? 'zh' : '';
+  els.taPrompt.value = task.prompt;
+  els.taPrompt.placeholder = ui('可以直接编辑提示词');
+  els.secPrompt.classList.add('surprise-active');
+  setSurpriseModelState();
+  setReplaceAvailable(false);
+  els.surpriseProfile.textContent = `${ui(currentSurpriseProfileLabel)} · ${ui('不使用参考图')}`;
+  show(els.surpriseNotice, true);
+  show(els.secEmpty, false);
+  show(els.secSource, false);
+  show(els.secPrompt, true);
+  show(els.secGen, true);
+  if ([...els.selRatio.options].some((option) => option.value === task.ratio)) {
+    els.selRatio.value = task.ratio;
+  }
+  updateHints();
+  if (reversedPromptZh) {
+    els.zhNote.textContent = explanationLabel('zh') + '：' + reversedPromptZh;
+    show(els.zhNote, true);
+  }
+  if (restoreResult && task.albumRecordId) {
+    const record = await getById(task.albumRecordId).catch(() => null);
+    if (record && surpriseMode && sourceKey(source) === requestId) {
+      await showSavedRecord(record, true);
+    }
+  }
+  return true;
+}
+
+async function refreshWorkspace() {
+  const surpriseTask = await getWindowSession('surpriseTask').catch(() => null);
+  if (surpriseTask?.active) {
+    if (surpriseTask.status === 'running') {
+      renderSurpriseLoading(surpriseTask);
+      return;
+    }
+    if (surpriseTask.status === 'failed') {
+      renderSurpriseFailure(surpriseTask);
+      return;
+    }
+    if (surpriseTask.prompt) {
+      await renderSurpriseTask(surpriseTask);
+      return;
+    }
+  }
+  await refreshPending();
+}
+
+async function createSurprisePrompt() {
+  if (!privacyConsentGranted) {
+    renderPrivacyRequired();
+    return;
+  }
+  if (generating || reversing || surpriseGenerating) {
+    showToast(ui('当前已有生成任务进行中'));
+    return;
+  }
+  const surpriseSelectionSnapshot = selectedModel(els.selVisionModel);
+  const task = {
+    active: true,
+    sourceRequestId: `surprise:${crypto.randomUUID()}`,
+    sourceTs: Date.now(),
+    status: 'running',
+    profile: 'ai',
+    profileLabel: 'AI 随机创作',
+    ratio: els.selRatio.value,
+    updatedAt: Date.now()
+  };
+  renderSurpriseLoading(task);
+  await setWindowSession('surpriseTask', task).catch(() => {});
+  try {
+    const resp = await send({
+      type: 'ir.job.surprise',
+      payload: {
+        sourceRequestId: task.sourceRequestId,
+        sourceTs: task.sourceTs,
+        ratio: task.ratio,
+        selection: surpriseSelectionSnapshot
+      }
+    });
+    if (!resp?.ok) throw new Error(resp?.error || ui('生成惊喜提示词失败'));
+    const readyTask = resp.task || await getWindowSession('surpriseTask');
+    if (!readyTask?.prompt) throw new Error(ui('反推模型未返回随机提示词'));
+    if (sourceKey(source) !== task.sourceRequestId) return;
+    await renderSurpriseTask(readyTask, { restoreResult: false });
+    const imageSelection = selectedModel(els.selImageModel);
+    const imageChoice = listModelChoices(settings, 'image').find((item) =>
+      item.platformId === imageSelection.platformId && item.model === imageSelection.model);
+    showToast(ui(requiresSourceImage(imageChoice)
+      ? '惊喜模式需要文生图模型，请切换到支持文生图的模型'
+      : '惊喜提示词已生成'));
+    els.taPrompt.focus({ preventScroll: true });
+    els.secPrompt.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (error) {
+    const failedTask = {
+      ...task,
+      status: 'failed',
+      error: error?.message || String(error),
+      updatedAt: Date.now()
+    };
+    await setWindowSession('surpriseTask', failedTask).catch(() => {});
+    if (sourceKey(source) === task.sourceRequestId) renderSurpriseFailure(failedTask);
+  }
+}
+
 function applySource(s) {
   const isNew = sourceKey(source) !== sourceKey(s);
   const becameReady = s.status === 'ready' && (isNew || source?.status !== 'ready');
   if (isNew) {
+    if (surpriseMode) void removeWindowSession('surpriseTask');
     reverseSeq += 1; // 让旧图片仍在等待的反推响应失效
     reversing = false;
     resetTaskUI();
@@ -518,6 +754,9 @@ function applySource(s) {
 
 function renderEmpty() {
   source = null;
+  surpriseMode = false;
+  els.secPrompt.classList.remove('surprise-active');
+  show(els.surpriseNotice, false);
   show(els.secEmpty, true);
   show(els.secSource, false);
   show(els.secPrompt, false);
@@ -534,16 +773,29 @@ chrome.storage.session.onChanged.addListener((changes) => {
   const feedbackChange = changes[windowSessionKey('captureFeedback')];
   const jobChange = changes[windowSessionKey('job')];
   const reverseJobChange = changes[windowSessionKey('reverseJob')];
+  const surpriseChange = changes[windowSessionKey('surpriseTask')];
   if (pendingChange?.newValue) applySource(pendingChange.newValue);
   if (actionChange?.newValue) void handleAlbumAction().catch((e) => showToast(e?.message || e));
   if (feedbackChange?.newValue) {
+    regionCaptureActive = false;
     const feedback = feedbackChange.newValue;
-    showToast(feedback.ok
-      ? ui('区域截图完成：{width}×{height}', { width: feedback.width, height: feedback.height })
-      : ui('区域截图失败：{error}', { error: feedback.error || ui('未知错误') }));
+    if (!feedback.cancelled) {
+      showToast(feedback.ok
+        ? ui('区域截图完成：{width}×{height}', { width: feedback.width, height: feedback.height })
+        : ui('区域截图失败：{error}', { error: localizeRuntimeError(feedback.error, currentLanguage) }));
+    }
   }
   if (jobChange?.newValue) renderBackgroundJob(jobChange.newValue);
   if (reverseJobChange?.newValue) renderBackgroundReverseJob(reverseJobChange.newValue);
+  if (surpriseChange?.newValue?.active &&
+      surpriseMode &&
+      sourceKey(source) === surpriseChange.newValue.sourceRequestId) {
+    const task = surpriseChange.newValue;
+    if (!shouldRenderSurpriseSessionTask(task, { surpriseGenerating, lastAlbumRecordId })) return;
+    if (task.status === 'running') renderSurpriseLoading(task);
+    else if (task.status === 'failed') renderSurpriseFailure(task);
+    else if (task.prompt) void renderSurpriseTask(task);
+  }
 });
 
 // 设置页或侧边栏保存后即时刷新，并始终采用最新的全局默认模型。
@@ -553,6 +805,11 @@ chrome.storage.local.onChanged.addListener((changes) => {
     settings = nextSettings;
     currentLanguage = resolveLanguage(settings.language);
     localizeDocument(currentLanguage);
+    if (surpriseMode) {
+      els.surpriseProfile.textContent = `${ui(currentSurpriseProfileLabel)} · ${ui('不使用参考图')}`;
+    }
+    setSurpriseModelState();
+    setReplaceAvailable(!surpriseMode);
     show(els.zhNote, Boolean(reversedPromptZh && reversedPromptLanguage === currentLanguage && currentLanguage !== 'en'));
     populateModelSelect(els.selVisionModel, 'vision');
     populateModelSelect(els.selImageModel, 'image');
@@ -712,6 +969,7 @@ async function generate() {
   const prompt = els.taPrompt.value.trim();
   if (!prompt) { showToast(ui('请先反推或输入提示词')); return; }
   if (generating) return;
+  const surpriseSnapshot = surpriseMode;
   const sourceSnapshot = source ? { ...source } : null;
   const sourcePromptSnapshot = reversedPrompt || prompt;
   const promptZhSnapshot = reversedPromptZh;
@@ -719,7 +977,11 @@ async function generate() {
   const imageSelection = selectedModel(els.selImageModel);
   const imageChoice = listModelChoices(settings, 'image').find((item) =>
     item.platformId === imageSelection.platformId && item.model === imageSelection.model);
-  const useSourceImage = requiresSourceImage(imageChoice);
+  if (surpriseSnapshot && requiresSourceImage(imageChoice)) {
+    showToast(ui('惊喜模式需要文生图模型，请切换到支持文生图的模型'));
+    return;
+  }
+  const useSourceImage = !surpriseSnapshot && requiresSourceImage(imageChoice);
   if (useSourceImage && !sourceSnapshot?.dataUrl) {
     showToast(ui('当前生图模型需要来源图片，请先选择图片'));
     return;
@@ -732,7 +994,6 @@ async function generate() {
   show(els.genError, false);
   // 点击生成后才显示转圈动画
   show(els.genProgress, true);
-  setCancelControls('generate');
   const t0 = Date.now();
   const timer = setInterval(() => {
     els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: Math.round((Date.now() - t0) / 1000) });
@@ -757,7 +1018,11 @@ async function generate() {
           sourceSnapshot,
           sourcePrompt: sourcePromptSnapshot,
           promptZh: promptZhSnapshot,
-          explanationLanguage: explanationLanguageSnapshot
+          explanationLanguage: explanationLanguageSnapshot,
+          albumMeta: surpriseSnapshot ? {
+            kind: 'surprise',
+            surpriseProfile: currentSurpriseProfile
+          } : undefined
         }});
     // 接口返回后立刻停止转圈
     clearInterval(timer);
@@ -800,7 +1065,6 @@ async function generate() {
     generating = false;
     els.btnGenerate.disabled = false;
     show(els.genProgress, false);
-    setCancelControls('');
   }
 }
 
@@ -808,8 +1072,31 @@ async function generate() {
 
 async function capturePage() {
   showToast(ui('请在网页中拖动框选截图区域，按 Esc 可取消'));
-  const resp = await send({ type: 'ir.startRegionCapture' });
-  if (!resp?.ok) showToast(ui('无法开始截图：{error}', { error: resp?.error || ui('请确认当前是普通网页') }));
+  regionCaptureActive = true;
+  const resp = await send({ type: 'ir.startRegionCapture' }).catch((error) => ({
+    ok: false,
+    error: error?.message || String(error)
+  }));
+  if (!resp?.ok) {
+    regionCaptureActive = false;
+    showToast(ui('无法开始截图：{error}', {
+      error: localizeRuntimeError(resp?.error || '请确认当前是普通网页', currentLanguage)
+    }));
+  }
+}
+
+async function cancelRegionCaptureFromPanel() {
+  if (!regionCaptureActive) return;
+  regionCaptureActive = false;
+  const resp = await send({ type: 'ir.cancelRegionCapture' }).catch((error) => ({
+    ok: false,
+    error: error?.message || String(error)
+  }));
+  if (!resp?.ok) {
+    showToast(ui('取消截图失败：{error}', {
+      error: localizeRuntimeError(resp?.error, currentLanguage)
+    }));
+  }
 }
 
 async function refreshCharacters() {
@@ -925,7 +1212,6 @@ async function replaceCharacter() {
   show(els.replaceDone, false);
   show(els.replaceError, false);
   show(els.replaceProgress, true);
-  setCancelControls('replacement');
   els.replaceProgressText.textContent = ui('正在替换角色或者物品…');
   const startedAt = Date.now();
   const progressTimer = setInterval(() => {
@@ -967,7 +1253,6 @@ async function replaceCharacter() {
     generating = false;
     els.btnGenerate.disabled = false;
     show(els.replaceProgress, false);
-    setCancelControls('');
   }
 }
 
@@ -1146,18 +1431,17 @@ async function renderBackgroundJob(job) {
   }
 
   const isReplacement = job.label === 'replacement';
+  setCancelControls('');
   if (job.status === 'running') {
     generating = true;
     els.btnGenerate.disabled = true;
     if (isReplacement) {
-      setCancelControls('replacement', Boolean(job.cancelRequested));
       show(els.replaceProgress, true);
       els.replaceProgressText.textContent = ui('{stage}，已等待 {seconds} 秒…', {
         stage: localizedJobStage(job.stage || '正在替换角色或者物品'),
         seconds: elapsed
       });
     } else {
-      setCancelControls('generate', Boolean(job.cancelRequested));
       show(els.genProgress, true);
       els.genText.textContent = ui('{stage}，已等待 {seconds} 秒…', {
         stage: localizedJobStage(job.stage || '正在生成'),
@@ -1356,9 +1640,7 @@ els.btnCopyPrompt.addEventListener('click', async () => {
 });
 els.btnGenerate.addEventListener('click', generate);
 els.btnRegen.addEventListener('click', generate);
-els.btnCancelGenerate.addEventListener('click', cancelCurrentJob);
-els.btnCancelReplace.addEventListener('click', cancelCurrentJob);
-els.btnCancelGroup.addEventListener('click', cancelCurrentJob);
+els.btnCancelGroup.addEventListener('click', cancelGroupJob);
 els.btnDownload.addEventListener('click', downloadCurrent);
 els.resImg.addEventListener('click', openCurrentResultInAlbum);
 els.resImg.addEventListener('keydown', (event) => {
@@ -1368,6 +1650,9 @@ els.resImg.addEventListener('keydown', (event) => {
 });
 $('btnCapture').addEventListener('click', capturePage);
 $('btnCapture2').addEventListener('click', capturePage);
+$('btnSurprise').addEventListener('click', createSurprisePrompt);
+$('btnSurprise2').addEventListener('click', createSurprisePrompt);
+$('btnSurpriseAgain').addEventListener('click', createSurprisePrompt);
 $('btnMagicToggle').addEventListener('click', async (e) => {
   const button = e.currentTarget;
   const visible = button.getAttribute('aria-pressed') !== 'true';
@@ -1390,6 +1675,10 @@ $('btnMagicToggle').addEventListener('click', async (e) => {
 $('btnCharacters').addEventListener('click', openCharacterManager);
 $('btnOpenCharacters').addEventListener('click', openCharacterManager);
 $('btnShowReplace').addEventListener('click', async () => {
+  if (surpriseMode) {
+    showToast(ui('惊喜模式没有参考图片，无法替换角色或物品。请先选择一张来源图片。'));
+    return;
+  }
   const visible = els.secReplace.hidden;
   setReplacePanel(visible);
   if (visible) {
@@ -1404,6 +1693,12 @@ $('characterPreviewClose').addEventListener('click', closeCharacterPreview);
 $('characterPreviewBackdrop').addEventListener('click', closeCharacterPreview);
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (regionCaptureActive) {
+    event.preventDefault();
+    event.stopPropagation();
+    void cancelRegionCaptureFromPanel();
+    return;
+  }
   if (!$('characterPreviewDialog').hidden) closeCharacterPreview();
   else if (!$('characterDialog').hidden) closeCharacterManager();
 });
@@ -1440,6 +1735,7 @@ els.taPrompt.addEventListener('input', () => {
 $('btnAlbum').addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
 $('btnAlbum2').addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
 els.btnGoAlbum.addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
+$('btnEmptyOptions').addEventListener('click', () => sendQuietly({ type: 'ir.openOptions' }));
 $('btnOptions').addEventListener('click', () => sendQuietly({ type: 'ir.openOptions' }));
 $('privacyConsentCheck').addEventListener('change', (e) => {
   $('btnPrivacyAgree').disabled = !e.target.checked;
@@ -1450,7 +1746,7 @@ $('btnPrivacyAgree').addEventListener('click', async () => {
     await grantPrivacyConsent();
     privacyConsentGranted = true;
     show(els.secPrivacy, false);
-    await refreshPending();
+    await refreshWorkspace();
   } catch (error) {
     showToast(ui('保存授权失败：{error}', { error: error?.message || error }));
   }
@@ -1489,7 +1785,7 @@ async function resolvePanelWindowId() {
       renderPrivacyRequired();
       return;
     }
-    await refreshPending();
+    await refreshWorkspace();
     await refreshCharacters();
     await handleAlbumAction();
     const reverseJob = await getWindowSession('reverseJob');

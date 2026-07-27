@@ -28,12 +28,71 @@
   let regionCaptureCleanup = null;
   let uiLanguage = 'zh';
   const contentTexts = {
-    en: { magic: 'Reconstruct prompt and generate', capture: 'Drag to select an area · Press Esc to cancel', small: 'Area too small. Drag again · Press Esc to cancel', cancelled: 'Area capture cancelled' },
-    ja: { magic: 'プロンプトを解析して生成', capture: 'ドラッグして範囲を選択 · Escでキャンセル', small: '範囲が小さすぎます。もう一度ドラッグ · Escでキャンセル', cancelled: '範囲キャプチャをキャンセルしました' },
-    ko: { magic: '프롬프트 분석 및 생성', capture: '드래그하여 영역 선택 · Esc로 취소', small: '영역이 너무 작습니다. 다시 드래그 · Esc로 취소', cancelled: '영역 캡처를 취소했습니다' },
-    zh: { magic: '反推提示词并生成同款', capture: '拖动框选截图区域 · 按 Esc 取消', small: '区域太小，请重新拖动框选 · 按 Esc 取消', cancelled: '已取消区域截图' }
+    en: {
+      magic: 'Reconstruct prompt and generate', capture: 'Drag to select an area · Press Esc to cancel',
+      small: 'Area too small. Drag again · Press Esc to cancel', cancelled: 'Area capture cancelled',
+      captureFailed: 'Capture failed: {error}', saveFailed: 'Could not save capture: {error}',
+      cropFailed: 'Could not crop capture: {error}', captured: 'Captured {width} × {height} area',
+      noScreenshot: 'No page screenshot was returned', unknown: 'Unknown error',
+      disconnected: 'The extension is not connected to this page. Refresh the page and try again.',
+      permission: 'Capture permission is unavailable. Return to the page and try again.',
+      unsupported: 'This page cannot be captured. Use a regular HTTP/HTTPS webpage.',
+      invalidArea: 'The selected area is invalid. Select it again.',
+      invalidCrop: 'The cropped screenshot is invalid.'
+    },
+    ja: {
+      magic: 'プロンプトを解析して生成', capture: 'ドラッグして範囲を選択 · Escでキャンセル',
+      small: '範囲が小さすぎます。もう一度ドラッグ · Escでキャンセル', cancelled: '範囲キャプチャをキャンセルしました',
+      captureFailed: 'キャプチャに失敗しました：{error}', saveFailed: 'キャプチャを保存できませんでした：{error}',
+      cropFailed: 'キャプチャの切り抜きに失敗しました：{error}', captured: '{width} × {height} の範囲をキャプチャしました',
+      noScreenshot: 'ページのスクリーンショットを取得できませんでした', unknown: '不明なエラー',
+      disconnected: '拡張機能がこのページに接続されていません。ページを再読み込みしてもう一度お試しください。',
+      permission: 'キャプチャ権限を使用できません。ページに戻ってもう一度お試しください。',
+      unsupported: 'このページはキャプチャできません。通常のHTTP/HTTPSページで使用してください。',
+      invalidArea: '選択範囲が無効です。もう一度選択してください。',
+      invalidCrop: '切り抜いたスクリーンショットが無効です。'
+    },
+    ko: {
+      magic: '프롬프트 분석 및 생성', capture: '드래그하여 영역 선택 · Esc로 취소',
+      small: '영역이 너무 작습니다. 다시 드래그 · Esc로 취소', cancelled: '영역 캡처를 취소했습니다',
+      captureFailed: '캡처 실패: {error}', saveFailed: '캡처 저장 실패: {error}',
+      cropFailed: '캡처 자르기 실패: {error}', captured: '{width} × {height} 영역을 캡처했습니다',
+      noScreenshot: '페이지 스크린샷을 가져오지 못했습니다', unknown: '알 수 없는 오류',
+      disconnected: '확장 프로그램이 이 페이지에 연결되지 않았습니다. 페이지를 새로고침한 후 다시 시도하세요.',
+      permission: '캡처 권한을 사용할 수 없습니다. 페이지로 돌아가 다시 시도하세요.',
+      unsupported: '이 페이지는 캡처할 수 없습니다. 일반 HTTP/HTTPS 웹페이지에서 사용하세요.',
+      invalidArea: '선택 영역이 올바르지 않습니다. 다시 선택하세요.',
+      invalidCrop: '잘라낸 스크린샷이 올바르지 않습니다.'
+    },
+    zh: {
+      magic: '反推提示词并生成同款', capture: '拖动框选截图区域 · 按 Esc 取消',
+      small: '区域太小，请重新拖动框选 · 按 Esc 取消', cancelled: '已取消区域截图',
+      captureFailed: '截图失败：{error}', saveFailed: '截图保存失败：{error}',
+      cropFailed: '截图裁切失败：{error}', captured: '已截取 {width} × {height} 区域',
+      noScreenshot: '未取得页面截图', unknown: '未知错误',
+      disconnected: '扩展尚未连接当前网页，请刷新页面后重试',
+      permission: '当前页面截图权限不可用，请返回网页后重试',
+      unsupported: '当前页面不支持截图，请在普通 HTTP/HTTPS 网页中使用',
+      invalidArea: '截图区域无效，请重新框选',
+      invalidCrop: '裁切后的截图数据无效'
+    }
   };
   const uiText = (key) => contentTexts[uiLanguage]?.[key] || contentTexts.en[key];
+  const uiFormat = (key, vars = {}) => {
+    let value = uiText(key);
+    for (const [name, replacement] of Object.entries(vars)) value = value.replaceAll(`{${name}}`, String(replacement));
+    return value;
+  };
+  const localizeCaptureError = (error) => {
+    const raw = String(error?.message || error || '').trim();
+    if (!raw) return uiText('unknown');
+    if (/Receiving end does not exist|Could not establish connection/i.test(raw)) return uiText('disconnected');
+    if (/activeTab permission|permission.*(?:capture|active tab)|active tab.*permission/i.test(raw)) return uiText('permission');
+    if (/普通 HTTP\/HTTPS|不支持截图|Cannot access|chrome:\/\/|edge:\/\//i.test(raw)) return uiText('unsupported');
+    if (/截图区域无效|selected area is invalid/i.test(raw)) return uiText('invalidArea');
+    if (/裁切后的截图(?:数据|尺寸)无效|cropped screenshot is invalid/i.test(raw)) return uiText('invalidCrop');
+    return raw;
+  };
 
   const WAND_SVG = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -203,9 +262,9 @@
     const notice = document.createElement('div');
     notice.style.cssText =
       'position:fixed;z-index:2147483647;left:50%;top:24px;transform:translateX(-50%);' +
-      'max-width:min(420px,calc(100vw - 32px));padding:10px 14px;border-radius:10px;' +
+      'box-sizing:border-box;width:max-content;max-width:min(420px,calc(100vw - 24px));padding:10px 14px;border-radius:10px;' +
       `background:${error ? '#b83232' : '#292437'};color:#fff;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;` +
-      'box-shadow:0 8px 28px rgba(0,0,0,.28);pointer-events:none;';
+      'box-shadow:0 8px 28px rgba(0,0,0,.28);overflow-wrap:anywhere;text-align:center;pointer-events:none;';
     notice.textContent = text;
     (document.documentElement || document.body).appendChild(notice);
     setTimeout(() => notice.remove(), 2600);
@@ -229,6 +288,7 @@
     `;
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
+    overlay.tabIndex = -1;
     overlay.innerHTML = `<div class="tip">${uiText('capture')}</div><div class="selection"><span class="size"></span></div>`;
     shadow.append(style, overlay);
     (document.documentElement || document.body).appendChild(captureHost);
@@ -252,6 +312,7 @@
       event.stopPropagation();
       cleanup();
       showPageNotice(uiText('cancelled'));
+      void chrome.runtime.sendMessage({ type: 'ir.regionCaptureCancelled' }).catch(() => {});
     };
     const selectionRect = (x, y) => ({
       x: Math.min(startX, x),
@@ -302,7 +363,9 @@
         }, (response) => {
           const message = chrome.runtime.lastError?.message;
           if (message || !response?.ok || !response.dataUrl) {
-            showPageNotice('截图失败：' + (message || response?.error || '未取得页面截图'), true);
+            showPageNotice(uiFormat('captureFailed', {
+              error: localizeCaptureError(message || response?.error || uiText('noScreenshot'))
+            }), true);
             return;
           }
           void cropRegionScreenshot(response.dataUrl, rect, window.innerWidth, window.innerHeight)
@@ -312,12 +375,19 @@
             }, (submitResponse) => {
               const submitError = chrome.runtime.lastError?.message;
               if (submitError || !submitResponse?.ok) {
-                showPageNotice('截图保存失败：' + (submitError || submitResponse?.error || '未知错误'), true);
+                showPageNotice(uiFormat('saveFailed', {
+                  error: localizeCaptureError(submitError || submitResponse?.error || uiText('unknown'))
+                }), true);
               } else {
-                showPageNotice(`已截取 ${submitResponse.width} × ${submitResponse.height} 区域`);
+                showPageNotice(uiFormat('captured', {
+                  width: submitResponse.width,
+                  height: submitResponse.height
+                }));
               }
             }))
-            .catch((error) => showPageNotice('截图裁切失败：' + (error?.message || error), true));
+            .catch((error) => showPageNotice(uiFormat('cropFailed', {
+              error: localizeCaptureError(error)
+            }), true));
         });
       }));
     }, true);
@@ -325,6 +395,7 @@
     overlay.addEventListener('wheel', (event) => event.preventDefault(), { passive: false });
     window.addEventListener('keydown', onKeyDown, true);
     regionCaptureCleanup = cleanup;
+    queueMicrotask(() => overlay.focus({ preventScroll: true }));
   }
 
   function cropRegionScreenshot(dataUrl, rect, viewportWidth, viewportHeight, maxDim = 2048) {
@@ -365,6 +436,13 @@
     if (msg?.type === 'ir.startRegionCapture') {
       startRegionCapture();
       sendResponse({ ok: true });
+      return;
+    }
+    if (msg?.type === 'ir.cancelRegionCapture') {
+      const cancelled = Boolean(regionCaptureCleanup);
+      regionCaptureCleanup?.();
+      if (cancelled) showPageNotice(uiText('cancelled'));
+      sendResponse({ ok: true, cancelled });
       return;
     }
     if (msg?.type === 'ir.magicVisibility') {

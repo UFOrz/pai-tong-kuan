@@ -1,16 +1,18 @@
 // 后台 Service Worker：消息路由、来源图片抓取、反推与生图调用、侧边栏/相册打开
 
-import { apiBaseUrlError, loadSettings, providerLabel, resolveModelConfig } from './lib/settings.js';
+import { apiBaseUrlError, isModelScopeImageEditModel, loadSettings, providerLabel, resolveModelConfig } from './lib/settings.js';
 import {
   normalizeImageBlob,
   blobFromDataUrl,
   reversePromptFromImage,
+  generateSurprisePromptWithModel,
   generateImageFromPrompt,
   generateAtlasCloudImage,
   generateAtlasCloudImageEdit,
   generateRunningHubImage,
   generateRunningHubWorkflowImage,
   generateAgnesImageEdit,
+  generateModelScopeImageEdit,
   generateZenMuxImageEdit,
   generateImageEdit,
   runningHubNeedsSource,
@@ -59,7 +61,9 @@ chrome.runtime.onInstalled.addListener(() => {
   void refreshContextMenus();
   setupActionBehavior();
   restrictStorageAccess();
-  void refreshActiveContentScripts();
+  // Chrome 不会把新安装扩展的声明式内容脚本补注入到已经打开的网页。
+  // 主动覆盖所有现有普通网页，避免用户必须逐页刷新后才能看到魔法按钮。
+  void refreshOpenContentScripts();
 });
 
 chrome.runtime.onStartup?.addListener(setupActionBehavior);
@@ -92,7 +96,7 @@ async function broadcastLanguage() {
 
 chrome.windows?.onRemoved?.addListener((windowId) => {
   activeSourceRequestIds.delete(windowId);
-  const keys = ['pendingSource', 'panelTask', 'albumAction', 'captureFeedback', 'job', 'reverseJob']
+  const keys = ['pendingSource', 'panelTask', 'surpriseTask', 'surpriseJob', 'albumAction', 'captureFeedback', 'job', 'reverseJob']
     .map((kind) => scopedSessionKey(kind, windowId))
     .filter(Boolean);
   if (keys.length) void chrome.storage.session.remove(keys).catch(() => {});
@@ -113,10 +117,10 @@ function restrictStorageAccess() {
     ?.catch(() => {});
 }
 
-async function refreshActiveContentScripts() {
-  const tabs = await chrome.tabs.query({ active: true });
+async function refreshOpenContentScripts() {
+  const tabs = await chrome.tabs.query({});
   await Promise.all(tabs
-    .filter((tab) => tab.id != null && /^https?:\/\//i.test(tab.url || ''))
+    .filter((tab) => tab.id != null && !tab.discarded && /^https?:\/\//i.test(tab.url || ''))
     .map((tab) => chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content/content.js']
@@ -175,6 +179,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           },
           { sessionKind: 'reverseJob', allowSupersede: true }
         );
+      case 'ir.job.surprise':
+        return await runWindowJob(
+          'surprise',
+          windowId,
+          (update) => surpriseAndPersist({ ...msg.payload, windowId }, update),
+          {
+            sourceKey: msg.payload?.sourceRequestId || null,
+            label: 'surprise',
+            stage: '正在生成惊喜提示词'
+          },
+          { sessionKind: 'surpriseJob', allowSupersede: true }
+        );
       case 'ir.generate':
         return await doGenerate({ ...msg.payload, windowId });
       case 'ir.edit':
@@ -209,8 +225,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true, job: await getWindowSession('job', windowId) };
       case 'ir.getReverseJob':
         return { ok: true, job: await getWindowSession('reverseJob', windowId) };
+      case 'ir.getSurpriseJob':
+        return { ok: true, job: await getWindowSession('surpriseJob', windowId) };
       case 'ir.startRegionCapture':
         return await startRegionCapture(windowId);
+      case 'ir.cancelRegionCapture':
+        return await cancelRegionCapture(windowId);
+      case 'ir.regionCaptureCancelled':
+        await setWindowSession('captureFeedback', windowId, {
+          ok: true,
+          cancelled: true,
+          ts: Date.now()
+        });
+        return { ok: true };
       case 'ir.captureRegion':
         try {
           return await captureSelectedRegion(msg.payload, sender.tab);
@@ -398,6 +425,20 @@ async function startRegionCapture(windowId) {
   return { ok: true };
 }
 
+async function cancelRegionCapture(windowId) {
+  const query = windowId == null ? { active: true, currentWindow: true } : { active: true, windowId };
+  const [tab] = await chrome.tabs.query(query);
+  if (!tab?.id) return { ok: true, cancelled: false };
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'ir.cancelRegionCapture' });
+    return { ok: true, cancelled: Boolean(response?.cancelled) };
+  } catch (error) {
+    const missingReceiver = /Receiving end does not exist|Could not establish connection/i.test(errText(error));
+    if (missingReceiver) return { ok: true, cancelled: false };
+    throw error;
+  }
+}
+
 async function sendToContentWithInjection(tab, message) {
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
@@ -517,6 +558,33 @@ async function doReverse({ sourceRequestId, sourceTs, selection, windowId } = {}
   };
 }
 
+async function doSurprise({ selection, sourceRequestId, sourceTs, ratio, windowId } = {}) {
+  if (!await hasPrivacyConsent()) {
+    return { ok: false, error: '请先阅读并同意隐私说明' };
+  }
+  const s = await loadSettings();
+  const cfg = resolveModelConfig(s, 'vision', selection);
+  const baseUrlError = apiBaseUrlError(cfg.baseUrl);
+  if (baseUrlError) return { ok: false, error: baseUrlError };
+  if (!cfg.apiKey) {
+    return { ok: false, error: '尚未配置反推模型 API Key，请前往设置页填写' };
+  }
+  if (!cfg.baseUrl || !cfg.model) {
+    return { ok: false, error: '反推模型的 Base URL / 模型名未配置完整' };
+  }
+  const result = await generateSurprisePromptWithModel({ cfg });
+  return {
+    ok: true,
+    prompt: result.prompt,
+    sourceRequestId,
+    sourceTs,
+    ratio,
+    windowId,
+    provider: providerLabel(cfg),
+    model: cfg.model
+  };
+}
+
 // ---------- 生成 ----------
 
 async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs, sourceDataUrl = '', windowId }) {
@@ -629,7 +697,15 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
   } else if (cfg.apiType === 'runninghub-workflow-v2') {
     return { ok: false, error: '当前 RunningHUB 工作流不支持角色替换，请选择图生图或 edit 模型' };
   } else if (cfg.preset === 'modelscope') {
-    return { ok: false, error: '当前 ModelScope 适配仅支持文生图，请选择支持 /images/edits 的模型' };
+    if (!isModelScopeImageEditModel(cfg)) {
+      return { ok: false, error: '请选择 ModelScope 的 Qwen-Image-Edit 图生图模型' };
+    }
+    r = await generateModelScopeImageEdit({
+      cfg,
+      prompt: prompt.trim(),
+      sourceDataUrl,
+      referenceDataUrl
+    });
   } else if (cfg.preset === 'agnes') {
     r = await generateAgnesImageEdit({
       cfg,
@@ -838,6 +914,58 @@ async function reverseAndPersist(payload, update) {
   return { ...resp, total: 1 };
 }
 
+async function surpriseAndPersist(payload, update) {
+  const baseTask = {
+    active: true,
+    status: 'running',
+    sourceRequestId: payload.sourceRequestId || `surprise:${crypto.randomUUID()}`,
+    sourceTs: payload.sourceTs || Date.now(),
+    ratio: payload.ratio || '1:1',
+    profile: 'ai',
+    profileLabel: 'AI 随机创作',
+    updatedAt: Date.now()
+  };
+  await setWindowSession('surpriseTask', payload.windowId, baseTask);
+  try {
+    const resp = await doSurprise({ ...payload, ...baseTask });
+    if (!resp?.ok) throw new Error(resp?.error || '生成惊喜提示词失败');
+    const task = {
+      ...baseTask,
+      status: 'ready',
+      prompt: resp.prompt,
+      sourcePrompt: resp.prompt,
+      explanation: '',
+      provider: resp.provider || '',
+      model: resp.model || '',
+      updatedAt: Date.now()
+    };
+    const active = await update({
+      stage: '惊喜提示词已生成',
+      sourceKey: task.sourceRequestId,
+      prompt: task.prompt,
+      provider: task.provider,
+      model: task.model
+    });
+    const currentTask = await getWindowSession('surpriseTask', payload.windowId);
+    if (active && currentTask?.sourceRequestId === baseTask.sourceRequestId) {
+      await setWindowSession('surpriseTask', payload.windowId, task);
+    }
+    return { task, prompt: task.prompt, provider: task.provider, model: task.model, total: 1 };
+  } catch (error) {
+    const active = await update({ stage: '生成惊喜提示词失败' });
+    const currentTask = await getWindowSession('surpriseTask', payload.windowId);
+    if (active && currentTask?.sourceRequestId === baseTask.sourceRequestId) {
+      await setWindowSession('surpriseTask', payload.windowId, {
+        ...baseTask,
+        status: 'failed',
+        error: errText(error),
+        updatedAt: Date.now()
+      });
+    }
+    throw error;
+  }
+}
+
 async function generateAndSave(payload, update, control) {
   const source = payload.sourceSnapshot ? { ...payload.sourceSnapshot } : null;
   control.checkpoint();
@@ -999,8 +1127,9 @@ async function recoverInterruptedJobs() {
   const values = await chrome.storage.session.get(null).catch(() => ({}));
   const updates = {};
   for (const [key, value] of Object.entries(values)) {
-    if (!/^ir\.window\.\d+\.(?:job|reverseJob)$/.test(key) || value?.status !== 'running') continue;
+    if (!/^ir\.window\.\d+\.(?:job|reverseJob|surpriseJob)$/.test(key) || value?.status !== 'running') continue;
     const isReverse = key.endsWith('.reverseJob');
+    const isSurprise = key.endsWith('.surpriseJob');
     updates[key] = {
       ...value,
       status: 'failed',
@@ -1008,8 +1137,23 @@ async function recoverInterruptedJobs() {
       updatedAt: Date.now(),
       error: isReverse
         ? '浏览器后台反推任务曾意外中断，请重新反推'
-        : '浏览器后台任务曾意外中断；已经生成的图片仍保留在相册中，请重新发起剩余任务'
+        : isSurprise
+          ? '浏览器后台惊喜提示词任务曾意外中断，请重新生成'
+          : '浏览器后台任务曾意外中断；已经生成的图片仍保留在相册中，请重新发起剩余任务'
     };
+    if (isSurprise) {
+      const windowId = normalizedWindowId(key.match(/^ir\.window\.(\d+)\./)?.[1]);
+      const taskKey = scopedSessionKey('surpriseTask', windowId);
+      const task = taskKey ? values[taskKey] : null;
+      if (taskKey && task?.status === 'running') {
+        updates[taskKey] = {
+          ...task,
+          status: 'failed',
+          error: '浏览器后台惊喜提示词任务曾意外中断，请重新生成',
+          updatedAt: Date.now()
+        };
+      }
+    }
   }
   if (Object.keys(updates).length) await chrome.storage.session.set(updates);
 }

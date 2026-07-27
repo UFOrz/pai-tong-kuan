@@ -11,6 +11,11 @@ let activePlatformId = '';
 let currentLanguage = 'zh';
 const platformStatus = new Map();
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
+const presetLabel = (presetId) => ui(PRESETS[presetId]?.label || '自定义平台');
+const platformDisplayName = (platform) => {
+  const originalPresetLabel = PRESETS[platform.preset]?.label;
+  return platform.name === originalPresetLabel ? presetLabel(platform.preset) : (platform.name || ui('未命名平台'));
+};
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -25,7 +30,7 @@ function showToast(text) {
 
 function newPlatform() {
   return {
-    id: crypto.randomUUID(), preset: 'custom', name: '新平台', baseUrl: '', apiKey: '',
+    id: crypto.randomUUID(), preset: 'custom', name: ui('新平台'), baseUrl: '', apiKey: '',
     models: [], visionModels: [], imageModels: []
   };
 }
@@ -47,19 +52,19 @@ function newPresetPlatform(presetId) {
 }
 
 function modelRows(platform) {
-  if (!platform.models.length) return '<div class="model-empty">尚未获取模型，可自动获取或手动添加。</div>';
+  if (!platform.models.length) return `<div class="model-empty">${esc(ui('尚未获取模型，可自动获取或手动添加。'))}</div>`;
   const visibleModels = state.showDisabledModels
     ? platform.models
     : platform.models.filter((model) => platform.visionModels.includes(model) || platform.imageModels.includes(model));
-  if (!visibleModels.length) return '<div class="model-empty">未启用的模型已隐藏，可打开上方开关查看。</div>';
+  if (!visibleModels.length) return `<div class="model-empty">${esc(ui('未启用的模型已隐藏，可打开上方开关查看。'))}</div>`;
   return visibleModels.map((model) => {
     const enabled = platform.visionModels.includes(model) || platform.imageModels.includes(model);
     return `
     <div class="model-row${enabled ? '' : ' disabled-model'}" data-model="${esc(model)}">
       <span title="${esc(model)}">${esc(model)}</span>
-      <label><input type="checkbox" data-capability="vision" ${platform.visionModels.includes(model) ? 'checked' : ''}/> 反推</label>
-      <label><input type="checkbox" data-capability="image" ${platform.imageModels.includes(model) ? 'checked' : ''}/> 生图</label>
-      <button class="model-remove" type="button" title="移除模型">×</button>
+      <label><input type="checkbox" data-capability="vision" ${platform.visionModels.includes(model) ? 'checked' : ''}/> ${esc(ui('反推'))}</label>
+      <label><input type="checkbox" data-capability="image" ${platform.imageModels.includes(model) ? 'checked' : ''}/> ${esc(ui('生图'))}</label>
+      <button class="model-remove" type="button" title="${esc(ui('移除模型'))}" aria-label="${esc(ui('移除模型'))}">×</button>
     </div>`;
   }).join('');
 }
@@ -71,9 +76,9 @@ function appendPlatformNavItem(list, platform) {
   item.dataset.id = platform.id;
   item.setAttribute('role', 'option');
   item.setAttribute('aria-selected', String(platform.id === activePlatformId));
-  const summary = PRESETS[platform.preset]?.label || '自定义平台';
+  const summary = presetLabel(platform.preset);
   item.innerHTML = `
-    <span class="platform-nav-main"><b>${esc(platform.name || '未命名平台')}</b><small>${esc(summary)}</small></span>
+    <span class="platform-nav-main"><b>${esc(platformDisplayName(platform))}</b><small>${esc(summary)}</small></span>
     <span class="platform-nav-count"><i>${esc(ui('反 {count}', { count: platform.visionModels.length }))}</i><i>${esc(ui('图 {count}', { count: platform.imageModels.length }))}</i></span>`;
   item.addEventListener('click', () => {
     activePlatformId = platform.id;
@@ -93,10 +98,10 @@ function renderPlatformNav() {
   const list = $('platformList');
   list.innerHTML = '';
   if (!state.platforms.length) {
-    list.innerHTML = '<div class="platform-empty">尚未添加接口<br><small>从右上角选择模板或自定义接口</small></div>';
+    list.innerHTML = `<div class="platform-empty">${esc(ui('尚未添加接口'))}<br><small>${esc(ui('从右上角选择模板或自定义接口'))}</small></div>`;
     return;
   }
-  appendNavGroupTitle(list, '已添加接口');
+  appendNavGroupTitle(list, ui('已添加接口'));
   state.platforms.forEach((platform) => appendPlatformNavItem(list, platform));
 }
 
@@ -111,11 +116,15 @@ function renderPlatforms() {
   if (platform) {
     const preset = PRESETS[platform.preset];
     const getKeyUrl = preset?.getKeyUrl || '';
-    const affiliateDisclosure = '通过此链接注册，插件开发者可能获得平台推广奖励，不影响您的使用价格。您也可以直接访问平台官网注册。';
+    const platformLabel = preset ? presetLabel(platform.preset) : platformDisplayName(platform);
+    const affiliateDisclosure = ui('通过此链接注册，插件开发者可能获得平台推广奖励，不影响您的使用价格。您也可以直接访问平台官网注册。');
+    const getKeyLabel = preset?.affiliateLink
+      ? ui('前往 {platform} 获取 API Key（推广链接）', { platform: platformLabel })
+      : ui('前往 {platform} 获取 API Key', { platform: platformLabel });
     const getKeyLink = getKeyUrl
       ? `<span class="get-key-wrap">
-          <a class="get-key-link" data-affiliate="${preset.affiliateLink ? 'true' : 'false'}" href="${esc(getKeyUrl)}" target="_blank" rel="noopener noreferrer"${preset.affiliateLink ? ` aria-describedby="getKeyDisclosure" aria-label="${esc(`前往 ${preset.label} 获取 API Key（推广链接）`)}"` : ` title="${esc(`前往 ${preset.label} 获取 API Key`)}"`}>Get Key</a>
-          ${preset.affiliateLink ? `<span class="get-key-disclosure" id="getKeyDisclosure" role="tooltip">${affiliateDisclosure}</span>` : ''}
+          <a class="get-key-link" data-affiliate="${preset.affiliateLink ? 'true' : 'false'}" href="${esc(getKeyUrl)}" target="_blank" rel="noopener noreferrer"${preset.affiliateLink ? ` aria-describedby="getKeyDisclosure" aria-label="${esc(getKeyLabel)}"` : ` title="${esc(getKeyLabel)}"`}>Get Key</a>
+          ${preset.affiliateLink ? `<span class="get-key-disclosure" id="getKeyDisclosure" role="tooltip">${esc(affiliateDisclosure)}</span>` : ''}
         </span>`
       : '';
     const card = document.createElement('article');
@@ -123,27 +132,27 @@ function renderPlatforms() {
     card.dataset.id = platform.id;
     card.innerHTML = `
       <div class="platform-title">
-        <span class="platform-index">${esc((platform.name || '平').slice(0, 1))}</span>
-        <input data-field="name" value="${esc(platform.name)}" aria-label="平台名称" />
-        <span class="preset-chip">${esc(PRESETS[platform.preset]?.label || '自定义平台')}</span>
-        <button class="btn mini danger remove-platform" type="button">删除平台</button>
+        <span class="platform-index">${esc(platformDisplayName(platform).slice(0, 1) || 'P')}</span>
+        <input data-field="name" value="${esc(platformDisplayName(platform))}" aria-label="${esc(ui('平台名称'))}" />
+        <span class="preset-chip">${esc(presetLabel(platform.preset))}</span>
+        <button class="btn mini danger remove-platform" type="button">${esc(ui('删除平台'))}</button>
       </div>
       <div class="platform-grid">
-        <label>Base URL<input data-field="baseUrl" list="builtinBaseUrls" value="${esc(platform.baseUrl)}" placeholder="选择内置接口或输入 https://api.example.com/v1" /></label>
+        <label>Base URL<input data-field="baseUrl" list="builtinBaseUrls" value="${esc(platform.baseUrl)}" placeholder="${esc(ui('选择内置接口或输入 {url}', { url: 'https://api.example.com/v1' }))}" /></label>
         <div class="key-field">
           <div class="key-field-label"><span>API Key</span>${getKeyLink}</div>
-          <span><input data-field="apiKey" type="password" value="${esc(platform.apiKey)}" placeholder="sk-..." aria-label="API Key"/><button class="btn mini key-toggle" type="button">显示</button></span>
+          <span><input data-field="apiKey" type="password" value="${esc(platform.apiKey)}" placeholder="sk-..." aria-label="API Key"/><button class="btn mini key-toggle" type="button">${esc(ui('显示'))}</button></span>
         </div>
       </div>
       <div class="platform-actions">
-        <button class="btn fetch-models" type="button">自动获取模型</button>
-        <input class="manual-model" placeholder="手动输入模型名称" />
-        <button class="btn add-model" type="button">添加</button>
+        <button class="btn fetch-models" type="button">${esc(ui('自动获取模型'))}</button>
+        <input class="manual-model" placeholder="${esc(ui('手动输入模型名称'))}" />
+        <button class="btn add-model" type="button">${esc(ui('添加'))}</button>
         <span class="platform-status">${esc(platformStatus.get(platform.id) || '')}</span>
       </div>
       <div class="model-head">
-        <span>模型名称与启用能力</span>
-        <label class="model-filter-toggle"><input class="show-disabled-models" type="checkbox" ${state.showDisabledModels ? 'checked' : ''}/> 显示未启用模型</label>
+        <span>${esc(ui('模型名称与启用能力'))}</span>
+        <label class="model-filter-toggle"><input class="show-disabled-models" type="checkbox" ${state.showDisabledModels ? 'checked' : ''}/> ${esc(ui('显示未启用模型'))}</label>
       </div>
       <div class="model-list">${modelRows(platform)}</div>`;
     bindPlatformCard(card, platform);
@@ -260,7 +269,7 @@ function renderDefaultSelect(type) {
   const current = choiceValue(state.defaults[type] || {});
   select.innerHTML = choices.length
     ? choices.map((choice) => `<option value="${esc(choiceValue(choice))}"${choiceValue(choice) === current ? ' selected' : ''}>${esc(choice.label)}</option>`).join('')
-    : '<option value="">尚未启用模型</option>';
+    : `<option value="">${esc(ui('尚未启用模型'))}</option>`;
   select.disabled = !choices.length;
   if (choices.length && !choices.some((choice) => choiceValue(choice) === current)) {
     state.defaults[type] = { platformId: choices[0].platformId, model: choices[0].model };

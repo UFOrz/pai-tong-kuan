@@ -481,14 +481,19 @@ body {
   position: fixed;
   left: 50%;
   bottom: 30px;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100vw - 24px);
   transform: translateX(-50%);
   background: rgba(30, 30, 40, .92);
   color: #fff;
   padding: 9px 18px;
   border-radius: 20px;
   font-size: 12.5px;
+  line-height: 1.45;
   z-index: 100;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 /* 页内确认框不依赖浏览器原生 confirm，侧边栏打开时也能稳定获取点击和焦点。 */
