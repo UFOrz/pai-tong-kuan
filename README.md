@@ -4,6 +4,11 @@
 
 本仓库只公开实际发布到浏览器扩展商店的软件包内容，以及开源所必需的说明和许可证；内部备份、商店审核材料、历史安装包和开发过程文件不包含在本仓库中。
 
+## 应用商店安装
+
+- [Microsoft Edge 扩展商店](https://microsoftedge.microsoft.com/addons/detail/fdbbhilcmficcfmeekgiljokipankflc)
+- [Chrome 应用商店](https://chromewebstore.google.com/detail/ajonhhookljcoimnpjdndpcneoelcbkl?utm_source=item-share-cb)
+
 ## 主要功能
 
 - 悬停网页图片，点击魔法按钮反推提示词
@@ -75,6 +80,11 @@ Pai Tong Kuan is a Chrome Manifest V3 extension for reconstructing image-generat
 Users provide their own API keys. Source images, prompts, reference assets, and generated results are stored locally, except when the user explicitly starts a task that sends the required data to the selected AI provider.
 
 This public repository mirrors the files shipped in the browser extension package, plus the README and AGPL-3.0 license. Internal backups, review materials, historical packages, credentials, and user data are not included.
+
+## Install from a browser store
+
+- [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/fdbbhilcmficcfmeekgiljokipankflc)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/ajonhhookljcoimnpjdndpcneoelcbkl?utm_source=item-share-cb)
 
 ## License
 
