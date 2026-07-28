@@ -6,6 +6,7 @@ import {
   blobFromDataUrl,
   reversePromptFromImage,
   generateSurprisePromptWithModel,
+  selectSurpriseGenre,
   generateImageFromPrompt,
   generateAtlasCloudImage,
   generateAtlasCloudImageEdit,
@@ -26,8 +27,11 @@ import { resolveLanguage, t } from './lib/i18n.js';
 
 const MENU_IMAGE = 'ir-image';
 const MENU_ALBUM = 'ir-album';
+const SURPRISE_HISTORY_KEY = 'surprisePromptHistoryV1';
+const SURPRISE_HISTORY_LIMIT = 5;
 const activeSourceRequestIds = new Map();
 const runningJobs = new Map();
+let surpriseHistoryQueue = Promise.resolve();
 
 function errText(e) {
   return (e && (e.message || String(e))) || '未知错误';
@@ -53,6 +57,67 @@ async function setWindowSession(kind, windowId, value) {
 async function removeWindowSession(kind, windowId) {
   const key = scopedSessionKey(kind, windowId);
   if (key) await chrome.storage.session.remove(key);
+}
+
+function withSurpriseHistoryLock(operation) {
+  const next = surpriseHistoryQueue.then(operation, operation);
+  surpriseHistoryQueue = next.catch(() => {});
+  return next;
+}
+
+function normalizeSurpriseHistory(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item === 'object' && typeof item.genreId === 'string')
+    .slice(-SURPRISE_HISTORY_LIMIT)
+    .map((item) => ({
+      id: String(item.id || ''),
+      genreId: String(item.genreId),
+      genreLabel: String(item.genreLabel || item.genreId),
+      prompt: String(item.prompt || '').slice(0, 1200),
+      createdAt: Number(item.createdAt) || Date.now()
+    }));
+}
+
+async function reserveSurpriseGenre() {
+  return withSurpriseHistoryLock(async () => {
+    const stored = await chrome.storage.local.get(SURPRISE_HISTORY_KEY);
+    const recentHistory = normalizeSurpriseHistory(stored[SURPRISE_HISTORY_KEY]);
+    const genre = selectSurpriseGenre(recentHistory);
+    const reservation = {
+      id: crypto.randomUUID(),
+      genreId: genre.id,
+      genreLabel: genre.label,
+      prompt: '',
+      createdAt: Date.now()
+    };
+    await chrome.storage.local.set({
+      [SURPRISE_HISTORY_KEY]: [...recentHistory, reservation].slice(-SURPRISE_HISTORY_LIMIT)
+    });
+    return { reservation, genre, recentHistory };
+  });
+}
+
+async function completeSurpriseHistory(reservationId, prompt) {
+  await withSurpriseHistoryLock(async () => {
+    const stored = await chrome.storage.local.get(SURPRISE_HISTORY_KEY);
+    const history = normalizeSurpriseHistory(stored[SURPRISE_HISTORY_KEY]);
+    const index = history.findIndex((item) => item.id === reservationId);
+    if (index < 0) return;
+    history[index] = { ...history[index], prompt: String(prompt || '').slice(0, 1200) };
+    await chrome.storage.local.set({ [SURPRISE_HISTORY_KEY]: history });
+  });
+}
+
+async function cancelSurpriseHistory(reservationId) {
+  await withSurpriseHistoryLock(async () => {
+    const stored = await chrome.storage.local.get(SURPRISE_HISTORY_KEY);
+    const history = normalizeSurpriseHistory(stored[SURPRISE_HISTORY_KEY]);
+    const next = history.filter((item) => item.id !== reservationId);
+    if (next.length !== history.length) {
+      await chrome.storage.local.set({ [SURPRISE_HISTORY_KEY]: next });
+    }
+  });
 }
 
 // ---------- 安装与菜单 ----------
@@ -572,17 +637,26 @@ async function doSurprise({ selection, sourceRequestId, sourceTs, ratio, windowI
   if (!cfg.baseUrl || !cfg.model) {
     return { ok: false, error: '反推模型的 Base URL / 模型名未配置完整' };
   }
-  const result = await generateSurprisePromptWithModel({ cfg });
-  return {
-    ok: true,
-    prompt: result.prompt,
-    sourceRequestId,
-    sourceTs,
-    ratio,
-    windowId,
-    provider: providerLabel(cfg),
-    model: cfg.model
-  };
+  const { reservation, genre, recentHistory } = await reserveSurpriseGenre();
+  try {
+    const result = await generateSurprisePromptWithModel({ cfg, genre, recentHistory });
+    await completeSurpriseHistory(reservation.id, result.prompt);
+    return {
+      ok: true,
+      prompt: result.prompt,
+      genreId: genre.id,
+      genreLabel: genre.label,
+      sourceRequestId,
+      sourceTs,
+      ratio,
+      windowId,
+      provider: providerLabel(cfg),
+      model: cfg.model
+    };
+  } catch (error) {
+    await cancelSurpriseHistory(reservation.id).catch(() => {});
+    throw error;
+  }
 }
 
 // ---------- 生成 ----------
@@ -935,6 +1009,8 @@ async function surpriseAndPersist(payload, update) {
       prompt: resp.prompt,
       sourcePrompt: resp.prompt,
       explanation: '',
+      genreId: resp.genreId || '',
+      genreLabel: resp.genreLabel || '',
       provider: resp.provider || '',
       model: resp.model || '',
       updatedAt: Date.now()
