@@ -1,6 +1,6 @@
 // 侧边栏面板：来源图片 → 反推提示词 → 生成同款图片 → 自动存入相册
 
-import { listModelChoices, loadSettings, requiresSourceImage, saveSettings, supportsImageEdit } from '../lib/settings.js';
+import { imageEditReferenceLimit, listModelChoices, loadSettings, requiresSourceImage, saveSettings, supportsImageEdit } from '../lib/settings.js';
 import { getById, addCharacter, getCharacters, getCharacterById, removeCharacters } from '../lib/db.js';
 import {
   normalizedWindowId,
@@ -13,48 +13,122 @@ import { grantPrivacyConsent, hasPrivacyConsent } from '../lib/privacy.js';
 import { explanationLabel, localizeDocument, localizeRuntimeError, resolveLanguage, t } from '../lib/i18n.js';
 
 const $ = (id) => document.getElementById(id);
+const MAX_CONCURRENT_GENERATION_JOBS = 4;
 
-const DEFAULT_REPLACE_INSTRUCTION = `Perform a highly photorealistic person replacement.
+const DEFAULT_PERSON_REPLACE_INSTRUCTION = `Perform a controlled person or character replacement using two ordered reference images.
 
 Image roles:
-- Image 1: The base image to edit. It defines the final composition, scene, and clothing.
-- Image 2: The identity and appearance reference. Use it only for the replacement person's face and physical characteristics.
+- Image 1 is the base image to edit. It is the authority for composition, target position, pose, expression state, clothing, scene, camera, lighting, and visual style.
+- Image 2 is the identity and physical-appearance reference. Extract only the referenced person or character. Ignore Image 2's background, clothing, pose, lighting, framing, and unrelated elements.
 
-Editing requirements:
-Completely replace the person in Image 1 with the person from Image 2. The final person must clearly preserve the identity and appearance of the person in Image 2, including:
-- Face shape, facial features, eyes, eyebrows, nose, and lips
-- Skin tone, hairstyle, hair color, and hairline
-- Apparent age, demeanor, and recognizable facial characteristics
-- Height proportions, shoulder width, waist-to-hip ratio, limb build, and overall body shape
+Target and priority:
+Replace only the primary target person or character in Image 1 with the identity from Image 2. If Image 1 contains multiple people, replace only the most visually prominent central target and leave every other person unchanged.
+Follow this priority order:
+1. Preserve Image 2's recognizable identity.
+2. Preserve Image 1's pose, expression state, gaze, clothing, composition, and scene.
+3. Make only the minimum local adjustments required for a natural integration.
 
-Clothing requirements:
-Preserve all clothing, footwear, and accessories worn by the person in Image 1.
-Do not change the clothing's style, color, material, pattern, neckline, sleeve design, or coordination.
-Refit the clothing naturally to the actual body shape of the person in Image 2, with realistic fabric folds, tension, occlusion, and weight distribution.
-Do not copy any clothing from Image 2.
+Identity requirements:
+Preserve all characteristics clearly visible in Image 2: face shape and proportions, eyes, eyebrows, nose, lips, skin tone, hairstyle, hair color, hairline, apparent age, distinctive asymmetric features, and visible body proportions.
+Use only evidence visible in Image 2. Do not invent concealed, cropped, or ambiguous body features.
+Do not blend the identities of Image 1 and Image 2, and do not retain recognizable facial traits from the original target in Image 1.
 
-Must remain unchanged:
-- Preserve the original pose, action, gestures, gaze direction, and expression state of the person in Image 1
-- Preserve the composition, subject position, subject size, and body orientation of Image 1
-- Preserve the background, environment, props, and their positions in Image 1
-- Preserve the camera angle, perceived focal length, depth of field, and crop of Image 1
-- Preserve the original light direction, shadows, color temperature, exposure, and overall color palette of Image 1
-- Preserve every element in Image 1 except the person's identity, appearance, hair, skin tone, and physical characteristics
+Clothing and pose:
+Keep all clothing, footwear, jewelry, and accessories from Image 1. Preserve their design, color, pattern, material, neckline, sleeves, layering, and placement. Do not copy clothing or accessories from Image 2.
+Keep Image 1's body orientation, pose, action, hand placement, gaze direction, and expression state.
+Allow only localized garment deformation needed to fit the replacement body naturally, including plausible folds, tension, occlusion, and contact.
 
-Integration requirements:
-Make the person from Image 2 appear naturally present in the scene from Image 1.
-Accurately match the lighting, skin highlights, shadows, perspective, sharpness, grain, and imaging characteristics of Image 1.
-The face, head, neck, and body must connect naturally and must not look like a pasted face swap.
-Preserve realistic skin texture. The final result should look like a real photograph rather than an AI-generated composite.
+Scene and style lock:
+Keep Image 1's crop, subject size and position, camera angle, perspective, perceived focal length, depth of field, background, props, and all non-target people and objects unchanged.
+Keep Image 1's light direction, shadow structure, color temperature, exposure, color palette, sharpness, grain, and finishing characteristics.
+Strictly match the visual medium of Image 1. If Image 1 is photographic, preserve photographic realism and natural skin texture. If it is illustration, anime, painting, graphic art, or 3D rendering, preserve that exact medium, linework, brushwork, shading, and rendering style instead of converting it into a photograph.
 
-Only permitted changes:
-The identity, facial appearance, hair, skin tone, and physical characteristics of the person in Image 1.
+Integration:
+Integrate the replacement head, hair, neck, skin, and body without seams, pasted-face edges, doubled features, or mismatched resolution. Reconstruct only the necessary local skin highlights, cast shadows, hair overlap, garment overlap, and contact shadows so they agree with Image 1.
 
-Prohibited:
-Do not change the clothing design, pose, or background. Do not add or remove objects.
-Do not beautify the subject into a different person, blend the facial features of the two people, or retain facial features from the person in Image 1.
-Do not produce duplicate faces, malformed fingers, distorted limbs, abnormal head-to-body proportions, plastic-looking skin, excessive skin smoothing,
-collage-like edges, text, or watermarks.`;
+Do not:
+Do not alter any non-target person or object. Do not change the clothing design, pose, background, framing, or scene layout. Do not add or remove non-target elements.
+Do not beautify the person into a different identity, average the two faces, introduce duplicate faces, distorted anatomy, malformed hands, abnormal proportions, plastic skin, excessive smoothing, collage edges, new text, logos, or watermarks.`;
+
+const DEFAULT_OBJECT_REPLACE_INSTRUCTION = `Perform a controlled object replacement using two ordered reference images.
+
+Image roles:
+- Image 1 is the base image to edit. It is the authority for composition, target location, scale, orientation, camera, scene, lighting, and visual style.
+- Image 2 is the replacement-object reference. Extract only the intended object. Ignore Image 2's background, surface, supports, hands, packaging, shadows, framing, and unrelated elements unless they are an inseparable part of the object.
+
+Target and priority:
+Replace only the primary target object in Image 1 with the object from Image 2. If Image 1 contains several objects, replace only the most visually prominent central target and leave every other person and object unchanged.
+Follow this priority order:
+1. Preserve the replacement object's recognizable design from Image 2.
+2. Preserve Image 1's target position, occupied area, orientation, interaction, composition, and scene.
+3. Make only the minimum local adjustments required for physical integration.
+
+Replacement-object identity:
+Preserve all characteristics clearly visible in Image 2: overall silhouette, component layout, proportions, geometry, color, material, surface texture, finish, seams, edges, openings, controls, decoration, wear, and distinctive details.
+Use only evidence visible in Image 2. Do not invent concealed, cropped, or ambiguous structures.
+Preserve legible markings from Image 2 only when they are clearly visible; do not invent brand names, labels, symbols, or text.
+
+Placement and interaction:
+Place the replacement object in exactly the target object's location in Image 1. Match its apparent size, orientation, perspective, vanishing direction, camera distance, and crop.
+Preserve all existing interactions: hand grip, body contact, support surface, attachment points, overlap, foreground and background occlusion, and spatial depth.
+Do not copy Image 2's background or presentation setup.
+
+Scene and style lock:
+Keep Image 1's people, poses, hands, expressions, clothing, architecture, furniture, props, background, camera angle, focal-length appearance, depth of field, and framing unchanged.
+Match Image 1's light direction, exposure, color temperature, local reflections, cast shadows, contact shadows, ambient occlusion, sharpness, grain, and finishing characteristics.
+Strictly match the visual medium of Image 1. Preserve photography, illustration, anime, painting, graphic art, or 3D rendering as appropriate; do not convert the scene to another medium.
+
+Integration:
+Rebuild only the pixels needed around the target object's boundary, contact points, reflections, and shadows. The result must look physically present in Image 1 rather than pasted, floating, oversized, or disconnected.
+
+Do not:
+Do not modify any non-target person or object. Do not change the scene layout, human anatomy, hand pose, background, framing, or camera.
+Do not retain recognizable design features from the original target object in Image 1. Do not merge the two objects, duplicate the object, add unsupported parts, distort geometry, create impossible contact, produce collage edges, or add new text, logos, or watermarks.`;
+
+const DEFAULT_CLOTHING_REPLACE_INSTRUCTION = `Perform a controlled clothing or outfit replacement using two ordered reference images.
+
+Image roles:
+- Image 1 is the base image to edit. It is the authority for the wearer's identity, face, hair, skin tone, body proportions, pose, expression, hands, scene, camera, lighting, and visual style.
+- Image 2 is the clothing reference. Extract only the intended garment, outfit, footwear, and clearly associated accessories. Ignore Image 2's model identity, face, hair, skin, body shape, pose, background, lighting, framing, and unrelated objects.
+
+Target and priority:
+Replace only the corresponding clothing worn by the primary target person in Image 1 with the clothing from Image 2. If Image 1 contains multiple people, change only the most visually prominent central target and leave every other person unchanged.
+Follow this priority order:
+1. Preserve the target person's identity, anatomy, body proportions, pose, expression, gaze, and hand placement from Image 1.
+2. Preserve the recognizable clothing design, color, material, pattern, and construction from Image 2.
+3. Preserve Image 1's composition, scene, camera, lighting, and visual medium.
+4. Make only the minimum local changes required for realistic dressing and occlusion.
+
+Clothing reconstruction:
+Preserve all garment characteristics clearly visible in Image 2: category, silhouette, cut, length, fit, neckline, collar, sleeve shape, waistline, hem, closures, pockets, seams, panels, trims, layering, pattern scale, colors, fabric, texture, sheen, thickness, transparency, wear, and distinctive details.
+Use only evidence visible in Image 2. Do not invent concealed, cropped, or ambiguous garment construction. When an unseen section must be completed, use the simplest physically consistent continuation of the visible design.
+Preserve legible garment text, labels, or symbols only when clearly visible in Image 2; do not invent brands, lettering, logos, or decorative elements.
+
+Fit and interaction:
+Fit the clothing naturally to the existing body in Image 1 without changing that person's anatomy or proportions.
+Reconstruct physically plausible fabric drape, folds, stretch, compression, gravity, thickness, overlap, openings, and contact with the neck, shoulders, torso, waist, hips, arms, legs, hands, and footwear.
+Preserve Image 1's pose and hand interaction. Keep hands, hair, jewelry, carried objects, and foreground elements in their original depth order, correctly occluding or being occluded by the new clothing.
+Replace only garments that correspond to the clothing shown in Image 2. Preserve unaffected garments, footwear, jewelry, and accessories from Image 1 unless they physically conflict with the replacement outfit.
+Do not copy the body, face, pose, or background of the model in Image 2.
+
+Scene and style lock:
+Keep Image 1's crop, subject position and size, facial identity, hairstyle, expression, gaze, anatomy, pose, background, props, non-target people, camera angle, perspective, focal-length appearance, and depth of field unchanged.
+Match Image 1's light direction, exposure, color temperature, cast shadows, contact shadows, reflections, sharpness, grain, and finishing characteristics.
+Strictly preserve the visual medium of Image 1. Maintain photography, illustration, anime, painting, graphic art, or 3D rendering as appropriate instead of converting the image to another style.
+
+Integration:
+Rebuild only the pixels required for the replaced clothing and its immediate boundaries, overlaps, contact shadows, and reflections. The clothing must look genuinely worn by the person in Image 1 rather than pasted on, body-painted, floating, or copied together with the reference model.
+
+Do not:
+Do not change the person's identity, face, hair, skin tone, age, body shape, anatomy, pose, expression, gaze, or hand placement.
+Do not modify the background, camera, framing, scene layout, non-target people, or unrelated objects.
+Do not retain conflicting design features from the original replaced garment. Do not blend incompatible garments, add extra limbs, distort hands or anatomy, create impossible fabric geometry, duplicate clothing, produce collage edges, or add new text, logos, or watermarks.`;
+
+function defaultReplaceInstruction(type = 'person') {
+  if (type === 'object') return DEFAULT_OBJECT_REPLACE_INSTRUCTION;
+  if (type === 'clothing') return DEFAULT_CLOTHING_REPLACE_INSTRUCTION;
+  return DEFAULT_PERSON_REPLACE_INSTRUCTION;
+}
 
 const els = {
   secPrivacy: $('secPrivacy'),
@@ -128,6 +202,10 @@ const jobPreviewUrls = new Map();
 const renderedJobRecordIds = new Set();
 let visibleJobState = null;
 let visibleJobTimer = 0;
+let generationJobsState = [];
+let generationJobsTimer = 0;
+let generationSubmitLocked = false;
+const presentedGenerationJobIds = new Set();
 let visibleReverseJobState = null;
 let visibleReverseJobTimer = 0;
 let regionCaptureActive = false;
@@ -138,7 +216,7 @@ let currentSurpriseProfileLabel = '';
 let currentSurpriseExplanation = '';
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
 
-$('replaceInstruction').value = DEFAULT_REPLACE_INSTRUCTION;
+$('replaceInstruction').value = defaultReplaceInstruction($('replaceType').value);
 
 function choiceValue(selection) {
   return selection?.platformId && selection?.model
@@ -772,6 +850,7 @@ chrome.storage.session.onChanged.addListener((changes) => {
   const actionChange = changes[windowSessionKey('albumAction')];
   const feedbackChange = changes[windowSessionKey('captureFeedback')];
   const jobChange = changes[windowSessionKey('job')];
+  const generationJobsChange = changes[windowSessionKey('generationJobs')];
   const reverseJobChange = changes[windowSessionKey('reverseJob')];
   const surpriseChange = changes[windowSessionKey('surpriseTask')];
   if (pendingChange?.newValue) applySource(pendingChange.newValue);
@@ -786,6 +865,7 @@ chrome.storage.session.onChanged.addListener((changes) => {
     }
   }
   if (jobChange?.newValue) renderBackgroundJob(jobChange.newValue);
+  if (generationJobsChange) void renderGenerationJobs(generationJobsChange.newValue || []);
   if (reverseJobChange?.newValue) renderBackgroundReverseJob(reverseJobChange.newValue);
   if (surpriseChange?.newValue?.active &&
       surpriseMode &&
@@ -964,20 +1044,58 @@ function updateHints() {
   els.modelHint.textContent = choice ? `${ui('默认生图')}：${choice.platformName} · ${choice.model}` : ui('尚未启用生图模型');
 }
 
-function beginGenerationProgress() {
-  generating = true;
-  els.btnGenerate.disabled = true;
+function renderGenerationJobsProgress() {
+  const active = generationJobsState.filter((job) => job?.status === 'running');
+  clearInterval(generationJobsTimer);
+  generationJobsTimer = 0;
+  els.btnGenerate.disabled = generating || active.length >= MAX_CONCURRENT_GENERATION_JOBS;
+  if (!active.length) {
+    show(els.genProgress, false);
+    return;
+  }
   show(els.genDone, false);
   show(els.genError, false);
-  els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: 0 });
+  const oldestStartedAt = Math.min(...active.map((job) => Number(job.startedAt) || Date.now()));
+  const seconds = Math.max(0, Math.round((Date.now() - oldestStartedAt) / 1000));
+  els.genText.textContent = active.length === 1
+    ? ui('正在后台生成 1 个任务，已等待 {seconds} 秒…', { seconds })
+    : ui('正在后台生成 {count} 个任务，最长已等待 {seconds} 秒…', {
+        count: active.length,
+        seconds
+      });
   show(els.genProgress, true);
-  const startedAt = Date.now();
-  const timer = setInterval(() => {
-    els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', {
-      seconds: Math.round((Date.now() - startedAt) / 1000)
-    });
-  }, 1000);
-  return timer;
+  generationJobsTimer = setInterval(renderGenerationJobsProgress, 1000);
+}
+
+function setGenerationJobsState(jobs = []) {
+  generationJobsState = (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => job && typeof job === 'object' && job.id)
+    .sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+  renderGenerationJobsProgress();
+}
+
+function activeSingleGenerationCount() {
+  return generationJobsState.filter((job) => job?.status === 'running').length;
+}
+
+function beginGenerationProgress(clientJobId, { sourceKey: jobSourceKey = '', label = 'generate' } = {}) {
+  const existing = generationJobsState.filter((job) => job.id !== clientJobId);
+  setGenerationJobsState([...existing, {
+    id: clientJobId,
+    type: 'generate',
+    status: 'running',
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    sourceKey: jobSourceKey,
+    label,
+    localOnly: true
+  }]);
+}
+
+function removeLocalGenerationJob(clientJobId) {
+  const job = generationJobsState.find((item) => item.id === clientJobId);
+  if (!job?.localOnly) return;
+  setGenerationJobsState(generationJobsState.filter((item) => item.id !== clientJobId));
 }
 
 function waitUntilGenerationStatusPainted() {
@@ -997,7 +1115,13 @@ async function generate() {
   if (!privacyConsentGranted) { renderPrivacyRequired(); return; }
   const prompt = els.taPrompt.value.trim();
   if (!prompt) { showToast(ui('请先反推或输入提示词')); return; }
-  if (generating) return;
+  if (generating) return showToast(ui('当前正在执行组图或替换任务，请等待完成'));
+  if (activeSingleGenerationCount() >= MAX_CONCURRENT_GENERATION_JOBS) {
+    return showToast(ui('同时最多运行 4 个单张生图任务，请等待其中一个完成'));
+  }
+  if (generationSubmitLocked) return;
+  generationSubmitLocked = true;
+  setTimeout(() => { generationSubmitLocked = false; }, 500);
   const surpriseSnapshot = surpriseMode;
   const sourceSnapshot = source ? { ...source } : null;
   const sourcePromptSnapshot = reversedPrompt || prompt;
@@ -1023,11 +1147,16 @@ async function generate() {
   } else {
     void persistTask();
   }
-  const timer = beginGenerationProgress();
+  const clientJobId = crypto.randomUUID();
+  beginGenerationProgress(clientJobId, {
+    sourceKey: sourceKey(sourceSnapshot) || (surpriseSnapshot ? sourceKey(source) : ''),
+    label: surpriseSnapshot ? 'surprise-image' : 'generate'
+  });
 
   try {
     const resp = useSourceImage
       ? await submitGenerationRequest({ type: 'ir.job.edit', payload: {
+          clientJobId,
           prompt,
           ratio: els.selRatio.value,
           selection: imageSelection,
@@ -1038,6 +1167,7 @@ async function generate() {
           jobLabel: '正在生成同款图片'
         }})
       : await submitGenerationRequest({ type: 'ir.job.generate', payload: {
+          clientJobId,
           prompt,
           ratio: els.selRatio.value,
           selection: imageSelection,
@@ -1048,7 +1178,8 @@ async function generate() {
                 albumMeta: {
                   kind: 'surprise',
                   surpriseProfile: currentSurpriseProfile
-                }
+                },
+                sourceKey: sourceKey(source)
               }
             : {
                 sourceSnapshot,
@@ -1057,47 +1188,22 @@ async function generate() {
                 explanationLanguage: explanationLanguageSnapshot
               })
         }});
-    // 接口返回后立刻停止转圈
-    clearInterval(timer);
-    show(els.genProgress, false);
-    const sourceChanged = sourceKey(source) !== sourceKey(sourceSnapshot);
     if (!resp?.ok) {
-      if (sourceChanged) {
-        showToast(ui('上一张图片生成失败：{error}', { error: resp?.error || ui('未知错误') }));
-        return;
+      // 正常情况下后台任务列表会先收到 failed 状态；仅在消息发送阶段失败时
+      // 清理本地占位并直接展示错误。
+      removeLocalGenerationJob(clientJobId);
+      const sourceChanged = sourceKey(source) !== sourceKey(sourceSnapshot);
+      if (sourceChanged) showToast(ui('上一张图片生成失败：{error}', { error: resp?.error || ui('未知错误') }));
+      else {
+        els.genError.textContent = ui('生成失败：{error}', { error: resp?.error || ui('未知错误') });
+        show(els.genError, true);
       }
-      els.genError.textContent = ui('生成失败：{error}', { error: resp?.error || ui('未知错误') });
-      show(els.genError, true);
       return;
     }
-    if (resp.cancelled && !resp.dataUrl) {
-      showToast(ui('任务已停止'));
-      return;
-    }
-    if (sourceChanged) {
-      showToast(ui('上一张图片的生成已完成，已保存到相册'));
-      return;
-    }
-    revokeRestoredResultUrl();
-    lastResult = resp;
-    els.resImg.src = resp.dataUrl;
-    els.resMeta.textContent =
-      `${resp.provider} · ${resp.model} · ${resp.width}×${resp.height} · ${resp.ratio}`;
-    show(els.secResult, true);
-    show(els.saveState, Boolean(resp.albumRecordId));
-    show(els.genDone, true);
-    lastAlbumRecordId = resp.albumRecordId || '';
-    if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
-    if (resp.cancelled) showToast(ui('任务已停止，当前已完成的图片已保存'));
-    els.resImg.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
+    removeLocalGenerationJob(clientJobId);
     els.genError.textContent = ui('生成失败：{error}', { error: e?.message || e });
     show(els.genError, true);
-  } finally {
-    clearInterval(timer);
-    generating = false;
-    els.btnGenerate.disabled = false;
-    show(els.genProgress, false);
   }
 }
 
@@ -1230,10 +1336,20 @@ function closeCharacterManager() { closeCharacterPreview(); $('characterDialog')
 
 async function replaceCharacter() {
   if (generating) return showToast(ui('当前已有生成任务进行中'));
+  if (activeSingleGenerationCount()) {
+    return showToast(ui('请等待单张生图任务完成后再开始组图或替换任务'));
+  }
   if (!source?.dataUrl) return showToast(ui('请先选择需要修改的图片'));
   const character = await getCharacterById(selectedCharacterId);
   if (!character) return openCharacterManager();
-  const instruction = $('replaceInstruction').value.trim() || DEFAULT_REPLACE_INSTRUCTION;
+  const editChoice = groupEditSelection();
+  if (!editChoice || imageEditReferenceLimit(editChoice) < 2) {
+    return showToast(ui('当前模型最多支持 1 张参考图，无法替换角色或物品；请切换到支持多参考图的模型'));
+  }
+  const replaceType = ['person', 'object', 'clothing'].includes($('replaceType').value)
+    ? $('replaceType').value
+    : 'person';
+  const instruction = $('replaceInstruction').value.trim() || defaultReplaceInstruction(replaceType);
   const sourceSnapshot = { ...source };
   const promptZhSnapshot = reversedPromptZh;
   const explanationLanguageSnapshot = reversedPromptLanguage;
@@ -1262,7 +1378,7 @@ async function replaceCharacter() {
       promptZh: promptZhSnapshot,
       explanationLanguage: explanationLanguageSnapshot,
       referenceDataUrl: await blobToDataUrl(character.blob),
-      albumMeta: { kind: 'replacement', characterId: character.id },
+      albumMeta: { kind: 'replacement', replacementType: replaceType, characterId: character.id },
       jobLabel: '正在替换角色或者物品'
     }});
     if (!resp?.ok) throw new Error(resp?.error || '替换失败');
@@ -1278,7 +1394,9 @@ async function replaceCharacter() {
     show(els.replaceDone, true);
     if (resp.cancelled) showToast(ui('任务已停止，当前已完成的图片已保存'));
   } catch (error) {
-    els.replaceError.textContent = ui('替换失败：{error}', { error: error?.message || error });
+    els.replaceError.textContent = ui('替换失败：{error}', {
+      error: localizeRuntimeError(error, currentLanguage)
+    });
     show(els.replaceError, true);
   } finally {
     clearInterval(progressTimer);
@@ -1509,11 +1627,54 @@ async function renderBackgroundJob(job) {
   }
 }
 
+async function renderGenerationJobs(jobs, { restore = false } = {}) {
+  const incoming = Array.isArray(jobs) ? jobs : [];
+  const incomingIds = new Set(incoming.map((job) => job?.id).filter(Boolean));
+  const pendingLocalJobs = generationJobsState.filter(
+    (job) => job?.localOnly && !incomingIds.has(job.id)
+  );
+  setGenerationJobsState([...incoming, ...pendingLocalJobs]);
+  const terminal = generationJobsState
+    .filter((job) => job.status !== 'running' && !presentedGenerationJobIds.has(job.id))
+    .sort((a, b) => (Number(b.finishedAt || b.updatedAt) || 0) - (Number(a.finishedAt || a.updatedAt) || 0));
+  if (!terminal.length) return;
+
+  // 一次存储更新可能同时带回多个历史任务。全部标记为已处理，但只展示
+  // 最近完成的一项，避免多个结果连续抢占侧边栏。
+  terminal.forEach((job) => presentedGenerationJobIds.add(job.id));
+  const latest = terminal.find((job) => !job.sourceKey || job.sourceKey === sourceKey(source)) || terminal[0];
+  const sameSource = !latest.sourceKey || latest.sourceKey === sourceKey(source);
+  if (latest.status === 'completed' && latest.lastRecordId) {
+    if (!sameSource) {
+      showToast(ui('上一张图片的生成已完成，已保存到相册'));
+      return;
+    }
+    const record = await getById(latest.lastRecordId).catch(() => null);
+    if (!record) return;
+    await showSavedRecord(record, true);
+    showToast(ui(restore ? '后台生成任务已完成，结果已保存到相册' : '生成完成，已保存到相册'));
+    return;
+  }
+  if (latest.status === 'failed') {
+    if (!sameSource) {
+      showToast(ui('上一张图片生成失败：{error}', { error: latest.error || ui('未知错误') }));
+      return;
+    }
+    els.genError.textContent = ui('生成失败：{error}', {
+      error: latest.error || ui('未知错误')
+    });
+    show(els.genError, true);
+  }
+}
+
 async function generateGroup(requestedCount) {
   if (!privacyConsentGranted) { renderPrivacyRequired(); return; }
   const prompt = els.taPrompt.value.trim();
   if (!prompt) return showToast(ui('缺少原作品提示词'));
   if (generating) return showToast(ui('当前已有生成任务进行中'));
+  if (activeSingleGenerationCount()) {
+    return showToast(ui('请等待单张生图任务完成后再开始组图或替换任务'));
+  }
 
   const count = [2, 4, 6, 8].includes(Number(requestedCount)) ? Number(requestedCount) : 4;
   const initialSelection = selectedModel(els.selImageModel);
@@ -1707,6 +1868,11 @@ $('btnMagicToggle').addEventListener('click', async (e) => {
 });
 $('btnCharacters').addEventListener('click', openCharacterManager);
 $('btnOpenCharacters').addEventListener('click', openCharacterManager);
+$('replaceType').addEventListener('change', (event) => {
+  $('replaceInstruction').value = defaultReplaceInstruction(event.currentTarget.value);
+  show(els.replaceDone, false);
+  show(els.replaceError, false);
+});
 $('btnShowReplace').addEventListener('click', async () => {
   if (surpriseMode) {
     showToast(ui('惊喜模式没有参考图片，无法替换角色或物品。请先选择一张来源图片。'));
@@ -1825,6 +1991,8 @@ async function resolvePanelWindowId() {
     if (reverseJob) renderBackgroundReverseJob(reverseJob);
     const job = await getWindowSession('job');
     if (job) await renderBackgroundJob(job);
+    const generationJobs = await getWindowSession('generationJobs');
+    if (generationJobs) await renderGenerationJobs(generationJobs, { restore: true });
   } catch (e) {
     renderEmpty();
     showToast(ui('初始化失败：{error}', { error: e?.message || e }));
@@ -1834,6 +2002,7 @@ async function resolvePanelWindowId() {
 window.addEventListener('pagehide', () => {
   clearTimeout(taskPersistTimer);
   clearInterval(visibleJobTimer);
+  clearInterval(generationJobsTimer);
   clearInterval(visibleReverseJobTimer);
   void persistTask();
   revokeRestoredResultUrl();

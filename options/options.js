@@ -31,7 +31,7 @@ function showToast(text) {
 function newPlatform() {
   return {
     id: crypto.randomUUID(), preset: 'custom', name: ui('新平台'), baseUrl: '', apiKey: '',
-    models: [], visionModels: [], imageModels: []
+    models: [], visionModels: [], imageModels: [], imageEditModels: []
   };
 }
 
@@ -39,6 +39,7 @@ function newPresetPlatform(presetId) {
   const preset = PRESETS[presetId];
   const visionModels = [...(preset.visionModels || [])];
   const imageModels = [...(preset.imageModels || [])];
+  const imageEditModels = [...(preset.imageEditModels || [])];
   const disabledModels = [...(preset.disabledModels || [])];
   return {
     id: crypto.randomUUID(),
@@ -48,7 +49,8 @@ function newPresetPlatform(presetId) {
     apiKey: '',
     models: [...new Set([...visionModels, ...imageModels, ...disabledModels])],
     visionModels,
-    imageModels
+    imageModels,
+    imageEditModels
   };
 }
 
@@ -185,6 +187,7 @@ function bindPlatformCard(card, platform) {
         platform.models = [];
         platform.visionModels = [];
         platform.imageModels = [];
+        platform.imageEditModels = [];
       }
       platform.preset = 'custom';
       return renderPlatforms();
@@ -199,6 +202,7 @@ function bindPlatformCard(card, platform) {
     ])];
     platform.visionModels = [...(preset.visionModels || [])];
     platform.imageModels = [...(preset.imageModels || [])];
+    platform.imageEditModels = [...(preset.imageEditModels || [])];
     renderPlatforms();
   });
   card.querySelector('.show-disabled-models').addEventListener('change', (e) => {
@@ -227,6 +231,9 @@ function bindPlatformCard(card, platform) {
       if (!resp?.ok) throw new Error(resp?.error || ui('获取失败'));
       let added = 0;
       for (const model of resp.models || []) if (addModel(platform, model)) added += 1;
+      if (platform.preset === 'openrouter' && Array.isArray(resp.imageEditModels)) {
+        platform.imageEditModels = [...new Set(resp.imageEditModels.filter((model) => platform.models.includes(model)))];
+      }
       platformStatus.set(platform.id, ui('已获取 {total} 个，新增 {added} 个', { total: resp.models?.length || 0, added }));
     } catch (error) {
       platformStatus.set(platform.id, ui('获取失败：{error}', { error: error?.message || error }));
@@ -253,6 +260,7 @@ function bindPlatformCard(card, platform) {
     platform.models = platform.models.filter((item) => item !== model);
     platform.visionModels = platform.visionModels.filter((item) => item !== model);
     platform.imageModels = platform.imageModels.filter((item) => item !== model);
+    platform.imageEditModels = (platform.imageEditModels || []).filter((item) => item !== model);
     renderPlatforms();
   });
   card.querySelector('.remove-platform').addEventListener('click', (e) => {

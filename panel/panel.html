@@ -191,6 +191,14 @@
       <div class="card-title row"><span>替换角色或者物品</span><span class="spacer"></span><button id="btnOpenCharacters" class="btn mini ghost">管理素材</button></div>
       <p class="feature-desc">保持构图、背景和光影基本不变，只替换目标人物、角色或物品。请选择支持图生图/edit 的模型。</p>
       <div id="characterPicker" class="character-picker"></div>
+      <div class="replace-type-row">
+        <label for="replaceType">替换类型</label>
+        <select id="replaceType">
+          <option value="person">人物或角色</option>
+          <option value="object">物品</option>
+          <option value="clothing">服装或穿搭</option>
+        </select>
+      </div>
       <textarea id="replaceInstruction" rows="8" aria-label="替换角色或者物品提示词"></textarea>
       <button id="btnReplaceGenerate" class="btn primary big" type="button">✨ 开始替换</button>
       <div id="replaceProgress" class="loading replace-status" hidden>

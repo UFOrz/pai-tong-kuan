@@ -1,6 +1,6 @@
 // 后台 Service Worker：消息路由、来源图片抓取、反推与生图调用、侧边栏/相册打开
 
-import { apiBaseUrlError, isModelScopeImageEditModel, loadSettings, providerLabel, resolveModelConfig } from './lib/settings.js';
+import { apiBaseUrlError, imageEditReferenceLimit, isModelScopeImageEditModel, loadSettings, providerLabel, resolveModelConfig } from './lib/settings.js';
 import {
   normalizeImageBlob,
   blobFromDataUrl,
@@ -10,6 +10,8 @@ import {
   generateImageFromPrompt,
   generateApiMartImage,
   generateApiMartImageEdit,
+  generateOpenRouterImage,
+  generateOpenRouterImageEdit,
   generateAtlasCloudImage,
   generateAtlasCloudImageEdit,
   generateRunningHubImage,
@@ -20,11 +22,12 @@ import {
   generateImageEdit,
   runningHubNeedsSource,
   listModels,
+  listOpenRouterModels,
   testConnection
 } from './lib/api.js';
 import { hasPrivacyConsent } from './lib/privacy.js';
 import { addRecordWithSource } from './lib/db.js';
-import { interruptedSessionPatch, normalizedWindowId, scopedSessionKey } from './lib/task-state.js';
+import { interruptedSessionPatch, normalizedWindowId, recoverInterruptedGenerationJobs, scopedSessionKey } from './lib/task-state.js';
 import { resolveLanguage, t } from './lib/i18n.js';
 
 const MENU_IMAGE = 'ir-image';
@@ -32,8 +35,11 @@ const MENU_ALBUM = 'ir-album';
 const SURPRISE_HISTORY_KEY = 'surprisePromptHistoryV1';
 const SURPRISE_HISTORY_LIMIT = 5;
 const JOB_HEARTBEAT_INTERVAL_MS = 20000;
+const GENERATION_JOB_HISTORY_LIMIT = 20;
+const MAX_CONCURRENT_GENERATION_JOBS = 4;
 const activeSourceRequestIds = new Map();
 const runningJobs = new Map();
+const generationJobQueues = new Map();
 let surpriseHistoryQueue = Promise.resolve();
 const startupRecovery = recoverInterruptedJobs().catch(() => {});
 
@@ -61,6 +67,36 @@ async function setWindowSession(kind, windowId, value) {
 async function removeWindowSession(kind, windowId) {
   const key = scopedSessionKey(kind, windowId);
   if (key) await chrome.storage.session.remove(key);
+}
+
+function withGenerationJobsLock(windowId, operation) {
+  const previous = generationJobQueues.get(windowId) || Promise.resolve();
+  const next = previous.then(operation, operation);
+  generationJobQueues.set(windowId, next.catch(() => {}));
+  return next;
+}
+
+function normalizedGenerationJobs(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((job) => job && typeof job === 'object' && job.id)
+    .sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+}
+
+async function upsertGenerationJob(windowId, state) {
+  return withGenerationJobsLock(windowId, async () => {
+    const jobs = normalizedGenerationJobs(await getWindowSession('generationJobs', windowId));
+    const next = jobs.filter((job) => job.id !== state.id);
+    next.push({ ...state });
+    const running = next.filter((job) => job.status === 'running');
+    const finished = next
+      .filter((job) => job.status !== 'running')
+      .sort((a, b) => (Number(b.finishedAt || b.updatedAt) || 0) - (Number(a.finishedAt || a.updatedAt) || 0))
+      .slice(0, GENERATION_JOB_HISTORY_LIMIT);
+    const stored = [...running, ...finished]
+      .sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+    await setWindowSession('generationJobs', windowId, stored);
+    return stored;
+  });
 }
 
 function withSurpriseHistoryLock(operation) {
@@ -268,18 +304,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'ir.edit':
         return await doEdit(msg.payload);
       case 'ir.job.generate':
-        return await runWindowJob(
+        return await runWindowGenerationJob(
           'generate',
           windowId,
           (update, control) => generateAndSave({ ...msg.payload, windowId }, update, control),
-          { sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null, label: 'generate' }
+          {
+            id: msg.payload?.clientJobId,
+            sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || msg.payload?.sourceKey || null,
+            label: 'generate'
+          }
         );
       case 'ir.job.edit':
-        return await runWindowJob(
+        return await (msg.payload?.albumMeta?.kind === 'replacement' ? runWindowJob : runWindowGenerationJob)(
           'edit',
           windowId,
           (update, control) => editAndSave({ ...msg.payload, windowId }, update, control),
           {
+            id: msg.payload?.clientJobId,
             sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null,
             label: msg.payload?.albumMeta?.kind === 'replacement' ? 'replacement' : 'generate'
           }
@@ -295,6 +336,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return await cancelWindowJob(windowId);
       case 'ir.getJob':
         return { ok: true, job: await getWindowSession('job', windowId) };
+      case 'ir.getGenerationJobs':
+        return { ok: true, jobs: normalizedGenerationJobs(await getWindowSession('generationJobs', windowId)) };
       case 'ir.getReverseJob':
         return { ok: true, job: await getWindowSession('reverseJob', windowId) };
       case 'ir.getSurpriseJob':
@@ -341,6 +384,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'ir.test':
         return { ok: true, result: await testConnection(msg.payload.cfg) };
       case 'ir.listModels':
+        if (msg.payload.cfg?.preset === 'openrouter') {
+          return { ok: true, ...(await listOpenRouterModels(msg.payload.cfg)) };
+        }
         return { ok: true, models: await listModels(msg.payload.cfg) };
       default:
         return { ok: false, error: '未知消息类型' };
@@ -689,7 +735,15 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
   const quality = s.imageQuality || 'low';
   const resolution = s.imageResolution || '1k';
   let r;
-  if (cfg.apiType === 'apimart-image-v1') {
+  if (cfg.apiType === 'openrouter-image-v1') {
+    r = await generateOpenRouterImage({
+      cfg,
+      prompt: prompt.trim(),
+      ratio,
+      quality,
+      resolution
+    });
+  } else if (cfg.apiType === 'apimart-image-v1') {
     r = await generateApiMartImage({
       cfg,
       prompt: prompt.trim(),
@@ -764,7 +818,28 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
   const quality = s.imageQuality || 'low';
   const resolution = s.imageResolution || '1k';
   let r;
-  if (cfg.apiType === 'apimart-image-v1') {
+  if (cfg.apiType === 'openrouter-image-v1') {
+    const referenceCount = [sourceDataUrl, referenceDataUrl].filter(Boolean).length;
+    const referenceLimit = imageEditReferenceLimit(cfg);
+    if (referenceLimit === 0) {
+      return { ok: false, error: '当前 OpenRouter 模型不支持图片编辑，请切换生图模型' };
+    }
+    if (referenceCount > referenceLimit) {
+      return {
+        ok: false,
+        error: '当前模型最多支持 1 张参考图，无法替换角色或物品；请切换到支持多参考图的模型'
+      };
+    }
+    r = await generateOpenRouterImageEdit({
+      cfg,
+      prompt: prompt.trim(),
+      sourceDataUrl,
+      referenceDataUrl,
+      ratio,
+      quality,
+      resolution
+    });
+  } else if (cfg.apiType === 'apimart-image-v1') {
     if (!/^gpt-image-2(?:-official)?$/i.test(String(cfg.model || ''))) {
       return { ok: false, error: '请选择 APImart 的 gpt-image-2 或 gpt-image-2-official 图片编辑模型' };
     }
@@ -890,6 +965,12 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
   if (runningJobs.has(registryKey) && !allowSupersede) {
     return { ok: false, error: '当前窗口已有后台任务进行中，请等待完成' };
   }
+  if (sessionKind === 'job' && !allowSupersede) {
+    const generationPrefix = `generation:${windowId}:`;
+    if ([...runningJobs.keys()].some((key) => key.startsWith(generationPrefix))) {
+      return { ok: false, error: '请等待单张生图任务完成后再开始组图或替换任务' };
+    }
+  }
   const jobId = crypto.randomUUID();
   let state = {
     id: jobId,
@@ -963,6 +1044,83 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
         lastRecordId: state.lastRecordId || ''
       };
     }
+    await update({ status: 'failed', finishedAt: Date.now(), error: errText(error) });
+    return {
+      ok: false,
+      jobId,
+      error: errText(error),
+      recordIds: state.recordIds || [],
+      lastRecordId: state.lastRecordId || ''
+    };
+  } finally {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    await stateWriteChain;
+    if (isCurrent()) runningJobs.delete(registryKey);
+  }
+}
+
+async function runWindowGenerationJob(type, windowId, executor, initial = {}) {
+  if (windowId == null) return { ok: false, error: '无法确定当前浏览器窗口' };
+  if (runningJobs.has(`job:${windowId}`)) {
+    return { ok: false, error: '当前正在执行组图或替换任务，请等待完成' };
+  }
+  const registryPrefix = `generation:${windowId}:`;
+  const activeCount = [...runningJobs.keys()].filter((key) => key.startsWith(registryPrefix)).length;
+  if (activeCount >= MAX_CONCURRENT_GENERATION_JOBS) {
+    return { ok: false, error: '同时最多运行 4 个单张生图任务，请等待其中一个完成' };
+  }
+  const requestedId = String(initial.id || '').trim();
+  const jobId = requestedId || crypto.randomUUID();
+  const registryKey = `generation:${windowId}:${jobId}`;
+  let state = {
+    id: jobId,
+    type,
+    status: 'running',
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    completed: 0,
+    total: 1,
+    recordIds: [],
+    ...initial,
+    id: jobId
+  };
+  let stateWriteChain = Promise.resolve();
+  const isCurrent = () => runningJobs.get(registryKey)?.id === jobId;
+  const update = async (patch = {}) => {
+    state = { ...state, ...patch, id: jobId, type, updatedAt: Date.now() };
+    if (!isCurrent()) return false;
+    const snapshot = { ...state };
+    const write = stateWriteChain.then(async () => {
+      if (!isCurrent()) return false;
+      await upsertGenerationJob(windowId, snapshot);
+      return true;
+    });
+    stateWriteChain = write.catch(() => {});
+    return write;
+  };
+  const control = {
+    isCancelled: () => false,
+    checkpoint: () => {}
+  };
+  runningJobs.set(registryKey, { id: jobId, type, cancelRequested: false });
+  let heartbeatTimer = 0;
+  try {
+    await update();
+    heartbeatTimer = setInterval(() => {
+      if (!isCurrent()) return;
+      void update({ heartbeatAt: Date.now() }).catch(() => {});
+    }, JOB_HEARTBEAT_INTERVAL_MS);
+    const result = await executor(update, control);
+    await update({
+      status: 'completed',
+      finishedAt: Date.now(),
+      completed: Array.isArray(result.recordIds) ? result.recordIds.length : 1,
+      total: result.total ?? 1,
+      recordIds: result.recordIds || state.recordIds,
+      lastRecordId: result.lastRecordId || result.albumRecordId || state.lastRecordId || ''
+    });
+    return { ok: true, jobId, ...result };
+  } catch (error) {
     await update({ status: 'failed', finishedAt: Date.now(), error: errText(error) });
     return {
       ok: false,
@@ -1248,6 +1406,11 @@ async function recoverInterruptedJobs() {
   const updates = {};
   const recoveredAt = Date.now();
   for (const [key, value] of Object.entries(values)) {
+    if (/^ir\.window\.\d+\.generationJobs$/.test(key)) {
+      const recoveredJobs = recoverInterruptedGenerationJobs(value, recoveredAt);
+      if (recoveredJobs) updates[key] = recoveredJobs;
+      continue;
+    }
     const patch = interruptedSessionPatch(key, value, recoveredAt);
     if (!patch) continue;
     updates[key] = patch;

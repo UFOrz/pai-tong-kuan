@@ -643,6 +643,19 @@ select {
 .feature-card { border-color: #e2dcff; background: linear-gradient(180deg, #fff, #faf8ff); }
 .feature-desc { margin: 0 0 10px; color: #777486; font-size: 12px; line-height: 1.65; }
 .replace-status { margin-top: 8px; }
+.replace-type-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.replace-type-row label {
+  color: #6b6b7a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.replace-type-row select { min-width: 0; width: 100%; }
 .character-picker { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
 .character-choice { position: relative; aspect-ratio: 1; overflow: hidden; padding: 0; border: 2px solid transparent; border-radius: 9px; background: #f1f0f6; cursor: pointer; }
 .character-choice img { width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; }
