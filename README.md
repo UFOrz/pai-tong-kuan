@@ -19,7 +19,7 @@
 
 ## 支持的平台
 
-内置配置包括 OpenAI、ModelScope、SiliconFlow、Agnes-AI、ZenMux、RunningHUB 和 AtlasCloud。用户也可以添加兼容接口。
+内置配置包括 OpenAI、ModelScope、SiliconFlow、Agnes-AI、ZenMux、RunningHUB、AtlasCloud 和 APImart。用户也可以添加兼容接口。
 
 不同平台和模型的功能、额度、价格、可用地区及接口行为由相应服务商决定。
 

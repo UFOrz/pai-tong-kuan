@@ -8,6 +8,8 @@ import {
   generateSurprisePromptWithModel,
   selectSurpriseGenre,
   generateImageFromPrompt,
+  generateApiMartImage,
+  generateApiMartImageEdit,
   generateAtlasCloudImage,
   generateAtlasCloudImageEdit,
   generateRunningHubImage,
@@ -22,16 +24,18 @@ import {
 } from './lib/api.js';
 import { hasPrivacyConsent } from './lib/privacy.js';
 import { addRecordWithSource } from './lib/db.js';
-import { normalizedWindowId, scopedSessionKey } from './lib/task-state.js';
+import { interruptedSessionPatch, normalizedWindowId, scopedSessionKey } from './lib/task-state.js';
 import { resolveLanguage, t } from './lib/i18n.js';
 
 const MENU_IMAGE = 'ir-image';
 const MENU_ALBUM = 'ir-album';
 const SURPRISE_HISTORY_KEY = 'surprisePromptHistoryV1';
 const SURPRISE_HISTORY_LIMIT = 5;
+const JOB_HEARTBEAT_INTERVAL_MS = 20000;
 const activeSourceRequestIds = new Map();
 const runningJobs = new Map();
 let surpriseHistoryQueue = Promise.resolve();
+const startupRecovery = recoverInterruptedJobs().catch(() => {});
 
 function errText(e) {
   return (e && (e.message || String(e))) || '未知错误';
@@ -204,12 +208,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
   if (info.menuItemId === MENU_IMAGE && info.srcUrl) {
     const panelOpenPromise = openSidePanelNow(tab?.windowId);
-    void handleSource({
-      src: info.srcUrl,
-      pageUrl: info.pageUrl || '',
-      pageTitle: tab?.title || '',
-      captureTabId: tab?.id
-    }, tab?.windowId, panelOpenPromise);
+    void startupRecovery.then(() => handleSource({
+        src: info.srcUrl,
+        pageUrl: info.pageUrl || '',
+        pageTitle: tab?.title || '',
+        captureTabId: tab?.id
+      }, tab?.windowId, panelOpenPromise))
+      .catch(() => {});
   }
 });
 
@@ -220,12 +225,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'ir.openPanel') {
     const windowId = sender.tab?.windowId;
     const panelOpenPromise = openSidePanelNow(windowId);
-    void handleSource({ ...msg.payload, captureTabId: sender.tab?.id }, windowId, panelOpenPromise)
+    void startupRecovery
+      .then(() => handleSource({ ...msg.payload, captureTabId: sender.tab?.id }, windowId, panelOpenPromise))
       .then(() => sendResponse({ ok: true }))
       .catch((e) => sendResponse({ ok: false, error: errText(e) }));
     return true;
   }
   (async () => {
+    await startupRecovery;
     const windowId = messageWindowId(msg?.payload, sender);
     switch (msg?.type) {
       case 'ir.getPending':
@@ -682,7 +689,15 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
   const quality = s.imageQuality || 'low';
   const resolution = s.imageResolution || '1k';
   let r;
-  if (cfg.apiType === 'atlascloud-image-v1') {
+  if (cfg.apiType === 'apimart-image-v1') {
+    r = await generateApiMartImage({
+      cfg,
+      prompt: prompt.trim(),
+      ratio,
+      quality,
+      resolution
+    });
+  } else if (cfg.apiType === 'atlascloud-image-v1') {
     r = await generateAtlasCloudImage({
       cfg,
       prompt: prompt.trim(),
@@ -749,7 +764,20 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
   const quality = s.imageQuality || 'low';
   const resolution = s.imageResolution || '1k';
   let r;
-  if (cfg.apiType === 'atlascloud-image-v1') {
+  if (cfg.apiType === 'apimart-image-v1') {
+    if (!/^gpt-image-2(?:-official)?$/i.test(String(cfg.model || ''))) {
+      return { ok: false, error: '请选择 APImart 的 gpt-image-2 或 gpt-image-2-official 图片编辑模型' };
+    }
+    r = await generateApiMartImageEdit({
+      cfg,
+      prompt: prompt.trim(),
+      sourceDataUrl,
+      referenceDataUrl,
+      ratio,
+      quality,
+      resolution
+    });
+  } else if (cfg.apiType === 'atlascloud-image-v1') {
     if (!supportsAtlasCloudEditModel(cfg.model)) {
       return { ok: false, error: '请选择 AtlasCloud 的 google/nano-banana-2-lite/edit 或 openai/gpt-image-2/edit 模型' };
     }
@@ -874,6 +902,7 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
     recordIds: [],
     ...initial
   };
+  let stateWriteChain = Promise.resolve();
   const isCurrent = () => runningJobs.get(registryKey)?.id === jobId;
   const isCancelled = () => isCurrent() && runningJobs.get(registryKey)?.cancelRequested === true;
   const checkpoint = () => {
@@ -885,12 +914,25 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
   const update = async (patch = {}) => {
     state = { ...state, ...patch, id: jobId, type, updatedAt: Date.now() };
     if (!isCurrent()) return false;
-    await setWindowSession(sessionKind, windowId, state);
-    return true;
+    const snapshot = { ...state };
+    const write = stateWriteChain.then(async () => {
+      if (!isCurrent()) return false;
+      await setWindowSession(sessionKind, windowId, snapshot);
+      return true;
+    });
+    stateWriteChain = write.catch(() => {});
+    return write;
   };
   runningJobs.set(registryKey, { id: jobId, type, cancelRequested: false });
-  await update();
+  let heartbeatTimer = 0;
   try {
+    await update();
+    // MV3 后台可能在长时间轮询中被回收。定期执行 storage API 写入既持久化
+    // 最新状态，也持续产生扩展 API 活动，让最长十分钟的平台任务保持可跟踪。
+    heartbeatTimer = setInterval(() => {
+      if (!isCurrent()) return;
+      void update({ heartbeatAt: Date.now() }).catch(() => {});
+    }, JOB_HEARTBEAT_INTERVAL_MS);
     const result = await executor(update, { isCancelled, checkpoint });
     const cancelled = Boolean(result.cancelled || isCancelled());
     await update({
@@ -930,6 +972,8 @@ async function runWindowJob(type, windowId, executor, initial = {}, {
       lastRecordId: state.lastRecordId || ''
     };
   } finally {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    await stateWriteChain;
     if (isCurrent()) runningJobs.delete(registryKey);
   }
 }
@@ -1202,21 +1246,12 @@ async function generateGroupAndSave(payload, update, control) {
 async function recoverInterruptedJobs() {
   const values = await chrome.storage.session.get(null).catch(() => ({}));
   const updates = {};
+  const recoveredAt = Date.now();
   for (const [key, value] of Object.entries(values)) {
-    if (!/^ir\.window\.\d+\.(?:job|reverseJob|surpriseJob)$/.test(key) || value?.status !== 'running') continue;
-    const isReverse = key.endsWith('.reverseJob');
+    const patch = interruptedSessionPatch(key, value, recoveredAt);
+    if (!patch) continue;
+    updates[key] = patch;
     const isSurprise = key.endsWith('.surpriseJob');
-    updates[key] = {
-      ...value,
-      status: 'failed',
-      finishedAt: Date.now(),
-      updatedAt: Date.now(),
-      error: isReverse
-        ? '浏览器后台反推任务曾意外中断，请重新反推'
-        : isSurprise
-          ? '浏览器后台惊喜提示词任务曾意外中断，请重新生成'
-          : '浏览器后台任务曾意外中断；已经生成的图片仍保留在相册中，请重新发起剩余任务'
-    };
     if (isSurprise) {
       const windowId = normalizedWindowId(key.match(/^ir\.window\.(\d+)\./)?.[1]);
       const taskKey = scopedSessionKey('surpriseTask', windowId);
@@ -1226,12 +1261,10 @@ async function recoverInterruptedJobs() {
           ...task,
           status: 'failed',
           error: '浏览器后台惊喜提示词任务曾意外中断，请重新生成',
-          updatedAt: Date.now()
+          updatedAt: recoveredAt
         };
       }
     }
   }
   if (Object.keys(updates).length) await chrome.storage.session.set(updates);
 }
-
-void recoverInterruptedJobs();

@@ -3,14 +3,16 @@
 import {
   addCharacterFromAlbumUnique,
   countAll,
+  getAllRecordIds,
   getById,
   getCharacterByAlbumRecordId,
   getPage,
+  getRecordsByIds,
   getSourceBlob,
   removeMany
 } from '../lib/db.js';
 import { detectImageFileType, normalizeImageMime } from '../lib/image-file.js';
-import { buildZip, blobToU8 } from '../lib/zip.js';
+import { buildZip, blobToU8, writeZipStream } from '../lib/zip.js';
 import { scopedSessionKey } from '../lib/task-state.js';
 import { paginationItems } from '../lib/pagination.js';
 import { explanationLabel, localizeDocument, resolveLanguage, t } from '../lib/i18n.js';
@@ -25,6 +27,12 @@ const els = {
   emptyDesc: $('emptyDesc'),
   countTag: $('countTag'),
   searchInput: $('searchInput'),
+  btnDownloadAll: $('btnDownloadAll'),
+  downloadProgress: $('downloadProgress'),
+  downloadProgressText: $('downloadProgressText'),
+  downloadProgressPercent: $('downloadProgressPercent'),
+  downloadProgressBar: $('downloadProgressBar'),
+  btnCancelDownload: $('btnCancelDownload'),
   btnSelectAll: $('btnSelectAll'),
   btnDownloadSel: $('btnDownloadSel'),
   btnDeleteSel: $('btnDeleteSel'),
@@ -93,9 +101,14 @@ let confirmResolver = null;
 let confirmReturnFocus = null;
 const PAGE_SIZE = 48;
 const ZIP_BATCH_SIZE = 20;
+const STREAM_READ_BATCH_SIZE = 8;
 let pageOffset = 0;
 let hasMore = false;
 let totalRecords = 0;
+let totalAlbumRecords = 0;
+let downloadingAll = false;
+let downloadController = null;
+let downloadProgressTimer = 0;
 let albumWindowId = null;
 let searchTimer = 0;
 let pageLoadSeq = 0;
@@ -292,8 +305,13 @@ function updateSelUI() {
   const n = selected.size;
   els.selBar.hidden = n === 0;
   els.selCount.textContent = n;
-  els.btnDownloadSel.disabled = n === 0;
-  els.btnDeleteSel.disabled = n === 0;
+  els.btnSelectAll.disabled = downloadingAll;
+  els.btnDownloadSel.disabled = downloadingAll || n === 0;
+  els.btnDeleteSel.disabled = downloadingAll || n === 0;
+  els.btnDownloadAll.disabled = downloadingAll || totalAlbumRecords === 0;
+  els.btnDownloadAll.textContent = downloadingAll
+    ? t('正在打包…', {}, currentLanguage)
+    : t('下载整个相册（共 {count} 张）', { count: totalAlbumRecords }, currentLanguage);
   const visibleIds = filtered.map((r) => r.id);
   const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
   els.btnSelectAll.textContent = t(allSelected ? '取消全选' : '全选', {}, currentLanguage);
@@ -528,6 +546,159 @@ async function downloadRecords(list) {
   }
 }
 
+function albumZipFileName() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `拍同款相册_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}.zip`;
+}
+
+function updateDownloadProgress(completed, total, key = '正在打包第 {current}/{total} 张图片…') {
+  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  els.downloadProgress.hidden = false;
+  els.downloadProgressText.textContent = ui(key, { current: completed, total });
+  els.downloadProgressPercent.textContent = `${percent}%`;
+  els.downloadProgressBar.style.width = `${percent}%`;
+}
+
+function hideDownloadProgress(delay = 0) {
+  clearTimeout(downloadProgressTimer);
+  downloadProgressTimer = setTimeout(() => {
+    if (!downloadingAll) els.downloadProgress.hidden = true;
+  }, delay);
+}
+
+function downloadErrorMessage(error) {
+  const message = error?.message || String(error);
+  return [
+    'ZIP 文件超过 4GB，请减少相册图片后重试',
+    'ZIP 文件数量超过 65535 个'
+  ].includes(message) ? ui(message) : message;
+}
+
+async function* albumZipEntries(recordIds, signal) {
+  const usedNames = new Set();
+  for (let start = 0; start < recordIds.length; start += STREAM_READ_BATCH_SIZE) {
+    if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+    const batch = await getRecordsByIds(recordIds.slice(start, start + STREAM_READ_BATCH_SIZE));
+    if (!batch.length) throw new Error(ui('读取相册图片失败'));
+    for (const rec of batch) {
+      if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      const { ext } = await detectImageFileType(rec.blob);
+      let name = fileNameOf(rec, 0, ext);
+      let duplicateIndex = 1;
+      while (usedNames.has(name)) name = fileNameOf(rec, duplicateIndex++, ext);
+      usedNames.add(name);
+      yield { name, blob: rec.blob, date: new Date(rec.createdAt) };
+    }
+  }
+}
+
+async function downloadAllFallback(recordIds, fileName, signal) {
+  const total = recordIds.length;
+  const batchCount = Math.ceil(total / ZIP_BATCH_SIZE);
+  if (batchCount > 1) {
+    showToast(ui('为降低内存占用，将下载 {count} 个 ZIP 分包；请允许多文件下载', { count: batchCount }));
+  }
+  const stem = fileName.replace(/\.zip$/i, '');
+  let completed = 0;
+  for (let part = 0; part < batchCount; part += 1) {
+    if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+    const start = part * ZIP_BATCH_SIZE;
+    const batch = await getRecordsByIds(recordIds.slice(start, start + ZIP_BATCH_SIZE));
+    if (!batch.length) throw new Error(ui('读取相册图片失败'));
+    const usedNames = new Set();
+    const entries = [];
+    for (const rec of batch) {
+      if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      const { ext } = await detectImageFileType(rec.blob);
+      let name = fileNameOf(rec, 0, ext);
+      let duplicateIndex = 1;
+      while (usedNames.has(name)) name = fileNameOf(rec, duplicateIndex++, ext);
+      usedNames.add(name);
+      entries.push({ name, data: await blobToU8(rec.blob) });
+      completed += 1;
+      updateDownloadProgress(completed, total);
+    }
+    const suffix = batchCount > 1 ? `_第${part + 1}部分_共${batchCount}部分` : '';
+    downloadBlob(buildZip(entries), `${stem}${suffix}.zip`, 2000);
+    if (part + 1 < batchCount) await new Promise((resolve) => setTimeout(resolve, 2200));
+  }
+}
+
+async function downloadAllRecords({ fileHandlePromise = null, fileName }) {
+  const signal = downloadController.signal;
+  let writable = null;
+  try {
+    const recordIds = await getAllRecordIds();
+    const total = recordIds.length;
+    if (!total) throw new Error(ui('相册中没有可下载的图片'));
+    totalAlbumRecords = total;
+    updateDownloadProgress(0, total, '正在准备 {total} 张图片…');
+
+    if (fileHandlePromise) {
+      const fileHandle = await fileHandlePromise;
+      if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      writable = await fileHandle.createWritable();
+      await writeZipStream(albumZipEntries(recordIds, signal), writable, {
+        signal,
+        total,
+        onProgress: ({ completed }) => updateDownloadProgress(completed, total)
+      });
+      await writable.close();
+      writable = null;
+    } else {
+      await downloadAllFallback(recordIds, fileName, signal);
+    }
+    updateDownloadProgress(total, total, '已完成 {total} 张图片的打包');
+    showToast(ui(fileHandlePromise ? '全部图片已保存到一个 ZIP 文件' : '全部图片已开始下载'));
+    hideDownloadProgress(1600);
+  } catch (error) {
+    if (writable) await writable.abort().catch(() => {});
+    if (error?.name === 'AbortError') {
+      showToast(ui('已取消下载'));
+      hideDownloadProgress(500);
+    } else {
+      showToast(ui('全部下载失败：{error}', { error: downloadErrorMessage(error) }));
+      hideDownloadProgress(1800);
+    }
+  } finally {
+    downloadingAll = false;
+    downloadController = null;
+    els.btnCancelDownload.disabled = false;
+    els.btnCancelDownload.textContent = ui('取消下载');
+    updateSelUI();
+  }
+}
+
+function startDownloadAll() {
+  if (downloadingAll) return;
+  if (!totalAlbumRecords) {
+    showToast(ui('相册中没有可下载的图片'));
+    return;
+  }
+  const fileName = albumZipFileName();
+  let fileHandlePromise = null;
+  if (typeof window.showSaveFilePicker === 'function') {
+    // 文件选择器必须在用户点击事件的同步调用链中打开，否则浏览器会拒绝。
+    try {
+      fileHandlePromise = window.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }]
+      });
+    } catch (error) {
+      showToast(ui('无法打开保存窗口：{error}', { error: error?.message || String(error) }));
+      return;
+    }
+  }
+  downloadingAll = true;
+  downloadController = new AbortController();
+  els.btnCancelDownload.disabled = false;
+  els.btnCancelDownload.textContent = ui('取消下载');
+  updateSelUI();
+  updateDownloadProgress(0, totalAlbumRecords, '请选择 ZIP 文件的保存位置…');
+  void downloadAllRecords({ fileHandlePromise, fileName });
+}
+
 // ---------- 删除 ----------
 
 async function deleteRecords(ids) {
@@ -540,7 +711,10 @@ async function deleteRecords(ids) {
     if (sourceUrl) { URL.revokeObjectURL(sourceUrl); sourceObjectUrls.delete(id); }
   }
   records = records.filter((r) => !ids.includes(r.id));
-  totalRecords = await countAll(els.searchInput.value.trim());
+  [totalRecords, totalAlbumRecords] = await Promise.all([
+    countAll(els.searchInput.value.trim()),
+    countAll('')
+  ]);
   if (!records.length && pageOffset > 0) {
     await loadPage(Math.max(0, pageOffset - PAGE_SIZE));
     return;
@@ -561,6 +735,18 @@ els.btnSelectAll.addEventListener('click', () => {
 els.btnDownloadSel.addEventListener('click', () => {
   const list = records.filter((r) => selected.has(r.id));
   downloadRecords(list);
+});
+
+els.btnDownloadAll.addEventListener('click', () => {
+  startDownloadAll();
+});
+
+els.btnCancelDownload.addEventListener('click', () => {
+  if (!downloadController || downloadController.signal.aborted) return;
+  els.btnCancelDownload.disabled = true;
+  els.btnCancelDownload.textContent = ui('正在取消…');
+  els.downloadProgressText.textContent = ui('正在取消下载…');
+  downloadController.abort();
 });
 
 els.btnDeleteSel.addEventListener('click', async () => {
@@ -699,9 +885,10 @@ els.confirmBackdrop.addEventListener('click', () => closeDeleteConfirmation(fals
 async function loadPage(offset = 0, requestedId = '') {
   const requestSeq = ++pageLoadSeq;
   const query = els.searchInput.value.trim();
-  const [{ records: pageRecords, hasMore: nextPage }, total] = await Promise.all([
+  const [{ records: pageRecords, hasMore: nextPage }, total, albumTotal] = await Promise.all([
     getPage({ offset, limit: PAGE_SIZE, query }),
-    countAll(query)
+    countAll(query),
+    countAll('')
   ]);
   if (requestSeq !== pageLoadSeq) return;
   let nextRecords = pageRecords;
@@ -717,6 +904,7 @@ async function loadPage(offset = 0, requestedId = '') {
   pageOffset = Math.max(0, offset);
   hasMore = nextPage;
   totalRecords = total;
+  totalAlbumRecords = albumTotal;
   applyFilter();
   window.scrollTo({ top: 0, behavior: 'auto' });
   if (requestedId && records.some((rec) => rec.id === requestedId)) openLightbox(requestedId);
@@ -744,5 +932,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
 
 window.addEventListener('pagehide', () => {
   clearTimeout(searchTimer);
+  clearTimeout(downloadProgressTimer);
+  downloadController?.abort();
   revokePageUrls();
 });

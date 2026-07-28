@@ -39,13 +39,14 @@ function newPresetPlatform(presetId) {
   const preset = PRESETS[presetId];
   const visionModels = [...(preset.visionModels || [])];
   const imageModels = [...(preset.imageModels || [])];
+  const disabledModels = [...(preset.disabledModels || [])];
   return {
     id: crypto.randomUUID(),
     preset: presetId,
     name: preset.label,
     baseUrl: preset.baseUrl,
     apiKey: '',
-    models: [...new Set([...visionModels, ...imageModels])],
+    models: [...new Set([...visionModels, ...imageModels, ...disabledModels])],
     visionModels,
     imageModels
   };
@@ -191,7 +192,11 @@ function bindPlatformCard(card, platform) {
     const preset = PRESETS[presetId];
     platform.preset = presetId;
     platform.name = preset.label;
-    platform.models = [...new Set([...(preset.visionModels || []), ...(preset.imageModels || [])])];
+    platform.models = [...new Set([
+      ...(preset.visionModels || []),
+      ...(preset.imageModels || []),
+      ...(preset.disabledModels || [])
+    ])];
     platform.visionModels = [...(preset.visionModels || [])];
     platform.imageModels = [...(preset.imageModels || [])];
     renderPlatforms();
@@ -206,7 +211,10 @@ function bindPlatformCard(card, platform) {
     e.currentTarget.textContent = ui(input.type === 'password' ? '显示' : '隐藏');
   });
   card.querySelector('.fetch-models').addEventListener('click', async (e) => {
-    if (!platform.baseUrl || !platform.apiKey) { showToast(ui('请先填写 Base URL 和 API Key')); return; }
+    if (!platform.baseUrl || (!platform.apiKey && platform.preset !== 'apimart')) {
+      showToast(ui('请先填写 Base URL 和 API Key'));
+      return;
+    }
     e.currentTarget.disabled = true;
     platformStatus.set(platform.id, ui('正在获取…'));
     e.currentTarget.textContent = ui('获取中…');
@@ -295,6 +303,56 @@ function collectSettings() {
   };
 }
 
+function applySettingsToForm(settings) {
+  state = settings;
+  $('interfaceLanguage').value = state.language || 'auto';
+  currentLanguage = resolveLanguage(state.language);
+  activePlatformId = state.platforms[0]?.id || '';
+  for (const ratio of RATIOS) $(sizeInputIds[ratio]).value = state.sizeMap?.[ratio] || '';
+  $('defaultRatio').value = state.defaultRatio || '1:1';
+  $('imageQuality').value = state.imageQuality || 'low';
+  $('imageResolution').value = state.imageResolution || '1k';
+  renderPlatforms();
+  localizeDocument(currentLanguage);
+}
+
+function settingsExportName() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  return `pai-tong-kuan-settings-${stamp}.json`;
+}
+
+function downloadSettingsFile(settings) {
+  const payload = {
+    format: 'pai-tong-kuan-settings',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = settingsExportName();
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function importedSettingsFrom(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(ui('配置文件格式无效'));
+  }
+  if (value.format && value.format !== 'pai-tong-kuan-settings') {
+    throw new Error(ui('不是拍同款配置文件'));
+  }
+  const imported = value.settings && typeof value.settings === 'object' ? value.settings : value;
+  if (!Array.isArray(imported.platforms) || !imported.defaults || typeof imported.defaults !== 'object') {
+    throw new Error(ui('配置文件缺少平台或默认模型信息'));
+  }
+  return imported;
+}
+
 $('defaultVision').addEventListener('change', (e) => { state.defaults.vision = parseChoice(e.target.value); });
 $('defaultImage').addEventListener('change', (e) => { state.defaults.image = parseChoice(e.target.value); });
 $('interfaceLanguage').addEventListener('change', (e) => {
@@ -319,22 +377,37 @@ $('btnSave').addEventListener('click', async () => {
     showToast(error?.message || String(error));
   }
 });
+$('btnExportSettings').addEventListener('click', () => {
+  downloadSettingsFile(collectSettings());
+  showToast(ui('配置已导出，请妥善保管其中的 API Key'));
+});
+$('btnImportSettings').addEventListener('click', () => $('settingsImportFile').click());
+$('settingsImportFile').addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) {
+    showToast(ui('导入失败：{error}', { error: ui('配置文件过大') }));
+    return;
+  }
+  try {
+    const imported = importedSettingsFrom(JSON.parse(await file.text()));
+    if (!window.confirm(ui('导入配置将覆盖当前设置，是否继续？'))) return;
+    await saveSettings(imported);
+    applySettingsToForm(await loadSettings());
+    showToast(ui('配置导入成功'));
+  } catch (error) {
+    const message = error instanceof SyntaxError ? ui('配置文件不是有效的 JSON') : (error?.message || String(error));
+    showToast(ui('导入失败：{error}', { error: message }));
+  }
+});
 $('btnAlbum').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('album/album.html') }));
 
 (async function init() {
-  state = await loadSettings();
-  $('interfaceLanguage').value = state.language || 'auto';
-  currentLanguage = resolveLanguage(state.language);
-  localizeDocument(currentLanguage);
   const presetOptions = Object.entries(PRESETS).filter(([id]) => id !== 'custom');
   $('addPlatformPreset').insertAdjacentHTML('beforeend', presetOptions.map(([id, preset]) =>
     `<option value="${esc(id)}">${esc(preset.label)}</option>`).join(''));
   $('builtinBaseUrls').innerHTML = presetOptions.map(([, preset]) =>
     `<option value="${esc(preset.baseUrl)}">${esc(preset.label)}</option>`).join('');
-  activePlatformId = state.platforms[0]?.id || '';
-  for (const ratio of RATIOS) $(sizeInputIds[ratio]).value = state.sizeMap?.[ratio] || '';
-  $('defaultRatio').value = state.defaultRatio || '1:1';
-  $('imageQuality').value = state.imageQuality || 'low';
-  $('imageResolution').value = state.imageResolution || '1k';
-  renderPlatforms();
+  applySettingsToForm(await loadSettings());
 })();

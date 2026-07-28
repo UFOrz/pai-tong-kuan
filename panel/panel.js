@@ -964,6 +964,35 @@ function updateHints() {
   els.modelHint.textContent = choice ? `${ui('默认生图')}：${choice.platformName} · ${choice.model}` : ui('尚未启用生图模型');
 }
 
+function beginGenerationProgress() {
+  generating = true;
+  els.btnGenerate.disabled = true;
+  show(els.genDone, false);
+  show(els.genError, false);
+  els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: 0 });
+  show(els.genProgress, true);
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', {
+      seconds: Math.round((Date.now() - startedAt) / 1000)
+    });
+  }, 1000);
+  return timer;
+}
+
+function waitUntilGenerationStatusPainted() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
+async function submitGenerationRequest(message) {
+  // 普通反推和惊喜模式统一从这里提交。先让计时状态真正绘制到屏幕，
+  // 再触发可能包含长提示词的扩展消息序列化。
+  await waitUntilGenerationStatusPainted();
+  return send(message);
+}
+
 async function generate() {
   if (!privacyConsentGranted) { renderPrivacyRequired(); return; }
   const prompt = els.taPrompt.value.trim();
@@ -986,22 +1015,19 @@ async function generate() {
     showToast(ui('当前生图模型需要来源图片，请先选择图片'));
     return;
   }
-  void persistTask();
-  generating = true;
-
-  els.btnGenerate.disabled = true;
-  show(els.genDone, false);
-  show(els.genError, false);
-  // 点击生成后才显示转圈动画
-  show(els.genProgress, true);
-  const t0 = Date.now();
-  const timer = setInterval(() => {
-    els.genText.textContent = ui('正在生成，已等待 {seconds} 秒…', { seconds: Math.round((Date.now() - t0) / 1000) });
-  }, 1000);
+  // 惊喜提示词已由输入防抖和后台任务保存，点击生图时不再重复读写整份
+  // surpriseTask，直接按普通反推结果的生图路径启动后台请求。
+  if (surpriseSnapshot) {
+    clearTimeout(taskPersistTimer);
+    taskPersistTimer = 0;
+  } else {
+    void persistTask();
+  }
+  const timer = beginGenerationProgress();
 
   try {
     const resp = useSourceImage
-      ? await send({ type: 'ir.job.edit', payload: {
+      ? await submitGenerationRequest({ type: 'ir.job.edit', payload: {
           prompt,
           ratio: els.selRatio.value,
           selection: imageSelection,
@@ -1011,18 +1037,25 @@ async function generate() {
           explanationLanguage: explanationLanguageSnapshot,
           jobLabel: '正在生成同款图片'
         }})
-      : await send({ type: 'ir.job.generate', payload: {
+      : await submitGenerationRequest({ type: 'ir.job.generate', payload: {
           prompt,
           ratio: els.selRatio.value,
           selection: imageSelection,
-          sourceSnapshot,
-          sourcePrompt: sourcePromptSnapshot,
-          promptZh: promptZhSnapshot,
-          explanationLanguage: explanationLanguageSnapshot,
-          albumMeta: surpriseSnapshot ? {
-            kind: 'surprise',
-            surpriseProfile: currentSurpriseProfile
-          } : undefined
+          ...(surpriseSnapshot
+            ? {
+                // 惊喜模式没有来源图；sourcePrompt 与 prompt 完全相同。
+                // 只发送一次长提示词，避免 sendMessage 在 UI 线程重复克隆。
+                albumMeta: {
+                  kind: 'surprise',
+                  surpriseProfile: currentSurpriseProfile
+                }
+              }
+            : {
+                sourceSnapshot,
+                sourcePrompt: sourcePromptSnapshot,
+                promptZh: promptZhSnapshot,
+                explanationLanguage: explanationLanguageSnapshot
+              })
         }});
     // 接口返回后立刻停止转圈
     clearInterval(timer);

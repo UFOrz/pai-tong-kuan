@@ -18,9 +18,23 @@
       <button id="btnSelectAll" class="btn">全选</button>
       <button id="btnDownloadSel" class="btn" disabled>下载</button>
       <button id="btnDeleteSel" class="btn danger" disabled>删除</button>
+      <button id="btnDownloadAll" class="btn" type="button" disabled>下载整个相册（共 0 张）</button>
       <button id="btnOptions" class="btn ghost">设置</button>
     </div>
   </header>
+
+  <section id="downloadProgress" class="download-progress" aria-live="polite" hidden>
+    <div class="download-progress-main">
+      <div class="download-progress-copy">
+        <strong id="downloadProgressText">正在准备下载…</strong>
+        <span id="downloadProgressPercent">0%</span>
+      </div>
+      <div class="download-progress-track" aria-hidden="true">
+        <span id="downloadProgressBar"></span>
+      </div>
+    </div>
+    <button id="btnCancelDownload" class="btn danger" type="button">取消下载</button>
+  </section>
 
   <div id="selBar" class="sel-bar" hidden>已选 <b id="selCount">0</b> 张</div>
 

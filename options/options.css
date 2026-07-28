@@ -118,6 +118,39 @@ body {
 .quality-option select:focus-visible { outline: 2px solid #7c5cf6; outline-offset: 1px; }
 .quality-note { margin: 8px 2px 0; color: #9895a5; font-size: 10.5px; line-height: 1.6; }
 
+.backup-card .desc { margin-bottom: 14px; }
+.backup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid #f0dfb9;
+  border-radius: 10px;
+  background: #fffaf0;
+  color: #795d27;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.backup-warning-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #e5a93b;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.backup-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 13px;
+}
+
 .btn {
   border: 1px solid #e0e0ea;
   background: #fff;
@@ -270,6 +303,8 @@ body {
 
 @media (max-width: 480px) {
   .card { padding: 16px; }
+  .backup-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .backup-actions .btn { width: 100%; }
   .platform-card { padding: 12px; }
   .platform-title {
     display: grid;

@@ -105,6 +105,20 @@
       <p class="quality-note">插件会根据模型协议提交对应选项；不支持 Quality 或分辨率档位的模型仍使用上方像素尺寸。</p>
     </section>
 
+    <section class="card backup-card">
+      <h2>④ 配置备份</h2>
+      <p class="desc">导出或导入平台、模型、比例、语言和其他生成设置，方便重装插件或更换设备。</p>
+      <div class="backup-warning" role="note">
+        <span class="backup-warning-icon" aria-hidden="true">!</span>
+        <span>导出文件包含 API Key，请妥善保管，不要公开分享。</span>
+      </div>
+      <div class="backup-actions">
+        <button class="btn" id="btnExportSettings" type="button">导出配置</button>
+        <button class="btn ghost" id="btnImportSettings" type="button">导入配置</button>
+        <input id="settingsImportFile" type="file" accept=".json,application/json" hidden />
+      </div>
+    </section>
+
     <div class="footer">
       <button class="btn primary" id="btnSave">保存设置</button>
       <button class="btn ghost" id="btnAlbum">打开相册</button>
