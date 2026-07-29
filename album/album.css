@@ -493,7 +493,6 @@ body {
   word-break: break-word;
   user-select: text;
 }
-.lb-prompt.sub { color: #8a8a99; max-height: 100px; font-size: 12px; }
 .lb-prompt.zh {
   color: #5e5480;
   background: #f5f2ff;

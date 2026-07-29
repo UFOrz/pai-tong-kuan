@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "拍同款",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "description": "悬停网页图片，一键反推 AI 提示词并生成同款图片，内置相册管理历史作品。",
   "minimum_chrome_version": "116",
   "icons": {

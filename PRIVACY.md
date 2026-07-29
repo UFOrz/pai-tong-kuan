@@ -1,6 +1,6 @@
 # 拍同款隐私政策
 
-更新日期：2026 年 7 月 28 日
+更新日期：2026 年 7 月 29 日
 
 “拍同款”是一款由用户自行配置 AI 平台 API Key 的 Chrome 扩展，用于分析用户主动选择的网页图片、生成复刻提示词及同款图片，并在本机管理生成记录。
 
@@ -20,7 +20,7 @@
 
 - 只有当用户点击反推、生成、替换角色或组图生成时，扩展才会将完成该任务所必需的来源图、参考素材和提示词发送到用户在设置中选定的 AI 平台。
 - API Key 仅用于向该平台鉴权。扩展开发者不运营中转服务器，也不会接收用户的 API Key、图片或提示词。
-- 内置支持的平台包括 OpenAI、ModelScope、SiliconFlow、Agnes-AI、ZenMux、RunningHUB、AtlasCloud、APImart 和 OpenRouter。用户也可以配置自己的兼容服务地址。
+- 内置支持的平台包括 OpenAI、ModelScope、SiliconFlow、Agnes-AI、ZenMux、RunningHUB、AtlasCloud、APImart、OpenRouter、QianwenAI 和 Aliyun Token Plan。用户也可以配置自己的兼容服务地址。
 - 部分 Get Key 链接属于平台邀请或推广链接。只有在用户主动点击后才会打开；开发者可能获得平台提供的推广奖励，但不会因此提高用户的使用价格。扩展不会自动跳转、替换网页链接、写入推广 Cookie，也不会跟踪用户是否注册或购买。
 - 第三方平台如何保存和处理请求，由相应平台的隐私政策和用户与该平台之间的协议决定。用户应在使用前阅读所选平台的政策。
 

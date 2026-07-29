@@ -1,6 +1,6 @@
 // 后台 Service Worker：消息路由、来源图片抓取、反推与生图调用、侧边栏/相册打开
 
-import { apiBaseUrlError, imageEditReferenceLimit, isModelScopeImageEditModel, loadSettings, providerLabel, resolveModelConfig } from './lib/settings.js';
+import { apiBaseUrlError, imageEditReferenceLimit, isModelScopeImageEditModel, loadSettings, providerLabel, requiresSourceImage, resolveModelConfig } from './lib/settings.js';
 import {
   normalizeImageBlob,
   blobFromDataUrl,
@@ -12,6 +12,10 @@ import {
   generateApiMartImageEdit,
   generateOpenRouterImage,
   generateOpenRouterImageEdit,
+  generateQianwenImage,
+  generateQianwenImageEdit,
+  generateBailianTokenPlanImage,
+  generateBailianTokenPlanImageEdit,
   generateAtlasCloudImage,
   generateAtlasCloudImageEdit,
   generateRunningHubImage,
@@ -301,8 +305,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         );
       case 'ir.generate':
         return await doGenerate({ ...msg.payload, windowId });
-      case 'ir.edit':
-        return await doEdit(msg.payload);
       case 'ir.job.generate':
         return await runWindowGenerationJob(
           'generate',
@@ -315,14 +317,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         );
       case 'ir.job.edit':
-        return await (msg.payload?.albumMeta?.kind === 'replacement' ? runWindowJob : runWindowGenerationJob)(
+        if (msg.payload?.albumMeta?.kind !== 'replacement') {
+          return { ok: false, error: '图片编辑仅允许通过“替换角色或物品”功能发起' };
+        }
+        return await runWindowJob(
           'edit',
           windowId,
           (update, control) => editAndSave({ ...msg.payload, windowId }, update, control),
           {
             id: msg.payload?.clientJobId,
             sourceKey: msg.payload?.sourceSnapshot?.requestId || msg.payload?.sourceSnapshot?.ts || null,
-            label: msg.payload?.albumMeta?.kind === 'replacement' ? 'replacement' : 'generate'
+            label: 'replacement'
           }
         );
       case 'ir.job.group':
@@ -731,6 +736,9 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
   if (!cfg.baseUrl || !cfg.model) {
     return { ok: false, error: '生图模型的 Base URL / 模型名未配置完整' };
   }
+  if (requiresSourceImage(cfg)) {
+    return { ok: false, error: '当前模型仅支持图片编辑，请切换到支持文生图的模型' };
+  }
   const size = s.sizeMap?.[ratio] || s.sizeMap?.['1:1'] || '1024x1024';
   const quality = s.imageQuality || 'low';
   const resolution = s.imageResolution || '1k';
@@ -742,6 +750,19 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
       ratio,
       quality,
       resolution
+    });
+  } else if (cfg.apiType === 'qianwen-image-v1') {
+    r = await generateQianwenImage({
+      cfg,
+      prompt: prompt.trim(),
+      ratio,
+      resolution
+    });
+  } else if (cfg.apiType === 'bailian-token-plan-image-v1') {
+    r = await generateBailianTokenPlanImage({
+      cfg,
+      prompt: prompt.trim(),
+      ratio
     });
   } else if (cfg.apiType === 'apimart-image-v1') {
     r = await generateApiMartImage({
@@ -761,25 +782,11 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
       resolution
     });
   } else if (cfg.apiType === 'runninghub-v2') {
-    let resolvedSourceDataUrl = sourceDataUrl;
-    if (runningHubNeedsSource(cfg.model)) {
-      if (!resolvedSourceDataUrl) {
-        const source = await getPending(windowId);
-        if (!source || source.status !== 'ready') {
-          return { ok: false, error: '该 RunningHUB 模型需要来源图片，请先点击网页图片上的魔法按钮' };
-        }
-        if ((sourceRequestId && source.requestId !== sourceRequestId) ||
-            (sourceTs != null && source.ts !== sourceTs)) {
-          return { ok: false, stale: true, error: '来源图片已切换，请重新生成' };
-        }
-        resolvedSourceDataUrl = source.dataUrl;
-      }
-    }
     r = await generateRunningHubImage({
       cfg,
       prompt: prompt.trim(),
       ratio,
-      sourceDataUrl: resolvedSourceDataUrl,
+      sourceDataUrl: '',
       resolution
     });
   } else if (cfg.apiType === 'runninghub-workflow-v2') {
@@ -796,7 +803,7 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
     ok: true,
     ...r,
     ratio,
-    size,
+    size: r.size || size,
     provider: providerLabel(cfg),
     model: cfg.model
   };
@@ -838,6 +845,23 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
       ratio,
       quality,
       resolution
+    });
+  } else if (cfg.apiType === 'qianwen-image-v1') {
+    r = await generateQianwenImageEdit({
+      cfg,
+      prompt: prompt.trim(),
+      sourceDataUrl,
+      referenceDataUrl,
+      ratio,
+      resolution
+    });
+  } else if (cfg.apiType === 'bailian-token-plan-image-v1') {
+    r = await generateBailianTokenPlanImageEdit({
+      cfg,
+      prompt: prompt.trim(),
+      sourceDataUrl,
+      referenceDataUrl,
+      ratio
     });
   } else if (cfg.apiType === 'apimart-image-v1') {
     if (!/^gpt-image-2(?:-official)?$/i.test(String(cfg.model || ''))) {
@@ -904,7 +928,7 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
   } else {
     r = await generateImageEdit({ cfg, prompt: prompt.trim(), sourceDataUrl, referenceDataUrl, size, quality });
   }
-  return { ok: true, ...r, ratio, size, provider: providerLabel(cfg), model: cfg.model };
+  return { ok: true, ...r, ratio, size: r.size || size, provider: providerLabel(cfg), model: cfg.model };
 }
 
 // ---------- 可恢复的后台生成任务 ----------
@@ -1300,7 +1324,8 @@ async function editAndSave(payload, update, control) {
   if (!resp?.ok) throw new Error(resp?.error || '图片编辑失败');
   await update({ stage: '正在保存到相册' });
   const albumRecordId = await saveGeneratedRecord(resp, {
-    prompt: payload.prompt,
+    // payload.prompt 是实际发送给编辑模型的替换指令，不应覆盖作品原有提示词。
+    prompt: payload.albumPrompt || payload.sourcePrompt || payload.prompt,
     source,
     sourcePrompt: payload.sourcePrompt,
     promptZh: payload.promptZh,
@@ -1321,71 +1346,48 @@ async function editAndSave(payload, update, control) {
 async function generateGroupAndSave(payload, update, control) {
   const count = [2, 4, 6, 8].includes(Number(payload.count)) ? Number(payload.count) : 4;
   const source = payload.sourceSnapshot ? { ...payload.sourceSnapshot } : null;
-  const useImageEdit = Boolean(payload.useImageEdit);
-  if (useImageEdit && !source?.dataUrl) throw new Error('缺少组图来源大图');
   const recordIds = [];
   const groupId = payload.groupId || crypto.randomUUID();
-  let first = null;
   await update({
     total: count,
     completed: 0,
     recordIds,
     sourceKey: source?.requestId || source?.ts || null,
     label: 'group',
-    stage: useImageEdit ? `正在基于当前大图生成主体锚点 1/${count}` : `正在使用文生图生成第 1/${count} 张`
+    stage: `正在使用文生图生成第 1/${count} 张`
   });
 
   for (let index = 0; index < count; index += 1) {
     if (control.isCancelled()) break;
     const number = index + 1;
     if (index > 0) {
-      await update({
-        stage: useImageEdit
-          ? `正在基于主体锚点生成第 ${number}/${count} 张`
-          : `正在使用文生图生成第 ${number}/${count} 张`
-      });
+      await update({ stage: `正在使用文生图生成第 ${number}/${count} 张` });
     }
     const variationPrompt = index === 0
       ? payload.prompt
-      : useImageEdit
-        ? `${payload.prompt}\n\n以参考图中的主体为唯一身份锚点，严格保持同一人物、角色或物品的身份特征、脸型、五官、发型、服装核心特征和整体画风一致。这是同一组作品的第 ${number} 张，仅允许在动作、表情、机位或构图上做自然的小幅变化；不得更换主体，不得增加或删除主要角色。`
-        : `${payload.prompt}\n\n这是同一主题组图的第 ${number} 张。保持主体类型、核心外观、服装、环境、光线、色彩和整体画风尽量一致，仅对动作、表情、机位或构图做自然的小幅变化；不得增加或删除主要角色。`;
-    const resp = useImageEdit
-      ? await doEdit({
-          prompt: variationPrompt,
-          ratio: payload.ratio,
-          selection: payload.editSelection,
-          sourceDataUrl: index === 0 ? source.dataUrl : first.dataUrl
-        })
-      : await doGenerate({
-          prompt: variationPrompt,
-          ratio: payload.ratio,
-          selection: payload.initialSelection,
-          sourceDataUrl: '',
-          windowId: payload.windowId
-        });
+      : `${payload.prompt}\n\n这是同一主题组图的第 ${number} 张。保持主体类型、核心外观、服装、环境、光线、色彩和整体画风尽量一致，仅对动作、表情、机位或构图做自然的小幅变化；不得增加或删除主要角色。`;
+    const resp = await doGenerate({
+      prompt: variationPrompt,
+      ratio: payload.ratio,
+      selection: payload.initialSelection,
+      sourceDataUrl: '',
+      windowId: payload.windowId
+    });
     if (!resp?.ok) throw new Error(`第 ${number} 张失败：${resp?.error || '未知错误'}`);
-    if (!first) first = resp;
-    const recordSource = useImageEdit && index > 0
-      ? { ...source, dataUrl: first.dataUrl, src: '' }
-      : source;
-    const sourceAssetId = useImageEdit && index > 0
-      ? `group:${groupId}:anchor`
-      : sourceAssetIdOf(source, groupId);
     const albumRecordId = await saveGeneratedRecord(resp, {
       prompt: payload.prompt,
-      source: recordSource,
+      source,
       sourcePrompt: payload.sourcePrompt,
       promptZh: payload.promptZh,
       explanationLanguage: payload.explanationLanguage,
-      sourceAssetId,
+      sourceAssetId: sourceAssetIdOf(source, groupId),
       albumMeta: {
         kind: 'group-item',
         groupId,
         groupIndex: number,
         groupCount: count,
-        groupAnchor: useImageEdit && index === 0,
-        groupMode: useImageEdit ? 'image-edit' : 'text-to-image'
+        groupAnchor: false,
+        groupMode: 'text-to-image'
       }
     });
     recordIds.push(albumRecordId);
@@ -1396,7 +1398,7 @@ async function generateGroupAndSave(payload, update, control) {
     recordIds,
     lastRecordId: recordIds.at(-1),
     total: count,
-    useImageEdit,
+    useImageEdit: false,
     cancelled: control.isCancelled()
   };
 }

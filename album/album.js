@@ -62,8 +62,6 @@ const els = {
   lbCopy: $('lbCopy'),
   lbPromptZhBox: $('lbPromptZhBox'),
   lbPromptZh: $('lbPromptZh'),
-  lbSourcePromptBox: $('lbSourcePromptBox'),
-  lbSourcePrompt: $('lbSourcePrompt'),
   lbProvider: $('lbProvider'),
   lbModel: $('lbModel'),
   lbSize: $('lbSize'),
@@ -346,10 +344,6 @@ function openLightbox(id) {
     els.lbPromptZh.textContent = rec.promptZh;
     els.lbPromptZhBox.querySelector('.lb-label.small').textContent = explanationLabel(currentLanguage);
   }
-
-  const showSrc = rec.sourcePrompt && rec.sourcePrompt !== rec.prompt;
-  els.lbSourcePromptBox.hidden = !showSrc;
-  if (showSrc) els.lbSourcePrompt.textContent = rec.sourcePrompt;
 
   els.lbProvider.textContent = rec.provider || '-';
   els.lbModel.textContent = rec.model || '-';

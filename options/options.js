@@ -1,6 +1,13 @@
 // 设置页：多平台配置、模型获取、能力启用、默认模型与尺寸映射
 
-import { PRESETS, RATIOS, listModelChoices, loadSettings, saveSettings } from '../lib/settings.js';
+import {
+  DEFAULT_PLATFORM_PRESET_IDS,
+  PRESETS,
+  RATIOS,
+  listModelChoices,
+  loadSettings,
+  saveSettings
+} from '../lib/settings.js';
 import { localizeDocument, resolveLanguage, t } from '../lib/i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -30,7 +37,7 @@ function showToast(text) {
 
 function newPlatform() {
   return {
-    id: crypto.randomUUID(), preset: 'custom', name: ui('新平台'), baseUrl: '', apiKey: '',
+    id: crypto.randomUUID(), preset: 'custom', listed: true, name: ui('新平台'), baseUrl: '', apiKey: '',
     models: [], visionModels: [], imageModels: [], imageEditModels: []
   };
 }
@@ -44,6 +51,7 @@ function newPresetPlatform(presetId) {
   return {
     id: crypto.randomUUID(),
     preset: presetId,
+    listed: true,
     name: preset.label,
     baseUrl: preset.baseUrl,
     apiKey: '',
@@ -100,17 +108,19 @@ function appendNavGroupTitle(list, text) {
 function renderPlatformNav() {
   const list = $('platformList');
   list.innerHTML = '';
-  if (!state.platforms.length) {
+  const listedPlatforms = state.platforms.filter((platform) => platform.listed !== false);
+  if (!listedPlatforms.length) {
     list.innerHTML = `<div class="platform-empty">${esc(ui('尚未添加接口'))}<br><small>${esc(ui('从右上角选择模板或自定义接口'))}</small></div>`;
     return;
   }
   appendNavGroupTitle(list, ui('已添加接口'));
-  state.platforms.forEach((platform) => appendPlatformNavItem(list, platform));
+  listedPlatforms.forEach((platform) => appendPlatformNavItem(list, platform));
 }
 
 function renderPlatforms() {
-  if (!state.platforms.some((platform) => platform.id === activePlatformId)) {
-    activePlatformId = state.platforms[0]?.id || '';
+  const listedPlatforms = state.platforms.filter((platform) => platform.listed !== false);
+  if (!listedPlatforms.some((platform) => platform.id === activePlatformId)) {
+    activePlatformId = listedPlatforms[0]?.id || '';
   }
   renderPlatformNav();
   const detail = $('platformDetail');
@@ -231,6 +241,21 @@ function bindPlatformCard(card, platform) {
       if (!resp?.ok) throw new Error(resp?.error || ui('获取失败'));
       let added = 0;
       for (const model of resp.models || []) if (addModel(platform, model)) added += 1;
+      if (['qianwenai', 'bailian_token_plan'].includes(platform.preset)) {
+        const preset = PRESETS[platform.preset];
+        platform.visionModels = [...new Set([
+          ...platform.visionModels,
+          ...(preset.visionModels || []).filter((model) => platform.models.includes(model))
+        ])];
+        platform.imageModels = [...new Set([
+          ...platform.imageModels,
+          ...(preset.imageModels || []).filter((model) => platform.models.includes(model))
+        ])];
+        platform.imageEditModels = [...new Set([
+          ...(platform.imageEditModels || []),
+          ...(preset.imageEditModels || []).filter((model) => platform.models.includes(model))
+        ])];
+      }
       if (platform.preset === 'openrouter' && Array.isArray(resp.imageEditModels)) {
         platform.imageEditModels = [...new Set(resp.imageEditModels.filter((model) => platform.models.includes(model)))];
       }
@@ -371,8 +396,15 @@ $('interfaceLanguage').addEventListener('change', (e) => {
 });
 $('btnAddPlatform').addEventListener('click', () => {
   const presetId = $('addPlatformPreset').value;
-  const platform = presetId === 'custom' ? newPlatform() : newPresetPlatform(presetId);
-  state.platforms.push(platform);
+  let platform = presetId === 'custom'
+    ? null
+    : state.platforms.find((item) => item.preset === presetId && item.listed === false);
+  if (platform) {
+    platform.listed = true;
+  } else {
+    platform = presetId === 'custom' ? newPlatform() : newPresetPlatform(presetId);
+    state.platforms.push(platform);
+  }
   activePlatformId = platform.id;
   renderPlatforms();
 });
@@ -412,7 +444,13 @@ $('settingsImportFile').addEventListener('change', async (event) => {
 $('btnAlbum').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('album/album.html') }));
 
 (async function init() {
-  const presetOptions = Object.entries(PRESETS).filter(([id]) => id !== 'custom');
+  const presetOrder = new Map(DEFAULT_PLATFORM_PRESET_IDS.map((id, index) => [id, index]));
+  const presetOptions = Object.entries(PRESETS)
+    .filter(([id]) => id !== 'custom')
+    .sort(([left], [right]) => (
+      (presetOrder.get(left) ?? Number.MAX_SAFE_INTEGER)
+      - (presetOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+    ));
   $('addPlatformPreset').insertAdjacentHTML('beforeend', presetOptions.map(([id, preset]) =>
     `<option value="${esc(id)}">${esc(preset.label)}</option>`).join(''));
   $('builtinBaseUrls').innerHTML = presetOptions.map(([, preset]) =>
