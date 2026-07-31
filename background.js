@@ -1284,22 +1284,30 @@ async function generateAndSave(payload, update, control) {
     sourceTs: source?.ts
   });
   if (!resp?.ok) throw new Error(resp?.error || '生成失败');
-  await update({ stage: '正在保存到相册' });
-  const albumRecordId = await saveGeneratedRecord(resp, {
-    prompt: payload.prompt,
-    source,
-    sourcePrompt: payload.sourcePrompt,
-    promptZh: payload.promptZh,
-    explanationLanguage: payload.explanationLanguage,
-    sourceAssetId: sourceAssetIdOf(source),
-    albumMeta: payload.albumMeta
-  });
+  const images = Array.isArray(resp.images) && resp.images.length ? resp.images : [resp];
+  const recordIds = [];
+  await update({ stage: '正在保存到相册', total: images.length });
+  for (const image of images) {
+    const albumRecordId = await saveGeneratedRecord({ ...resp, ...image, images: undefined }, {
+      prompt: payload.prompt,
+      source,
+      sourcePrompt: payload.sourcePrompt,
+      promptZh: payload.promptZh,
+      explanationLanguage: payload.explanationLanguage,
+      sourceAssetId: sourceAssetIdOf(source),
+      albumMeta: payload.albumMeta
+    });
+    recordIds.push(albumRecordId);
+    await update({ completed: recordIds.length, recordIds: [...recordIds], lastRecordId: albumRecordId });
+  }
+  const albumRecordId = recordIds.at(-1);
+  const { images: _images, ...primaryResponse } = resp;
   return {
-    ...resp,
+    ...primaryResponse,
     albumRecordId,
-    recordIds: [albumRecordId],
+    recordIds,
     lastRecordId: albumRecordId,
-    total: 1,
+    total: images.length,
     cancelled: control.isCancelled()
   };
 }
