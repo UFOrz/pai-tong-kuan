@@ -56,7 +56,7 @@ function newPresetPlatform(presetId) {
     baseUrl: preset.baseUrl,
     apiKey: '',
     models: [...new Set([...visionModels, ...imageModels, ...disabledModels])],
-    modelAliases: {},
+    modelAliases: { ...(preset.modelAliases || {}) },
     visionModels,
     imageModels,
     imageEditModels
@@ -214,7 +214,7 @@ function bindPlatformCard(card, platform) {
       ...(preset.imageModels || []),
       ...(preset.disabledModels || [])
     ])];
-    platform.modelAliases = {};
+    platform.modelAliases = { ...(preset.modelAliases || {}) };
     platform.visionModels = [...(preset.visionModels || [])];
     platform.imageModels = [...(preset.imageModels || [])];
     platform.imageEditModels = [...(preset.imageEditModels || [])];
