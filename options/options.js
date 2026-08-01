@@ -38,7 +38,7 @@ function showToast(text) {
 function newPlatform() {
   return {
     id: crypto.randomUUID(), preset: 'custom', listed: true, name: ui('新平台'), baseUrl: '', apiKey: '',
-    models: [], visionModels: [], imageModels: [], imageEditModels: []
+    models: [], modelAliases: {}, visionModels: [], imageModels: [], imageEditModels: []
   };
 }
 
@@ -56,6 +56,7 @@ function newPresetPlatform(presetId) {
     baseUrl: preset.baseUrl,
     apiKey: '',
     models: [...new Set([...visionModels, ...imageModels, ...disabledModels])],
+    modelAliases: {},
     visionModels,
     imageModels,
     imageEditModels
@@ -70,9 +71,11 @@ function modelRows(platform) {
   if (!visibleModels.length) return `<div class="model-empty">${esc(ui('未启用的模型已隐藏，可打开上方开关查看。'))}</div>`;
   return visibleModels.map((model) => {
     const enabled = platform.visionModels.includes(model) || platform.imageModels.includes(model);
+    const alias = String(platform.modelAliases?.[model] || '').trim();
     return `
     <div class="model-row${enabled ? '' : ' disabled-model'}" data-model="${esc(model)}">
-      <span title="${esc(model)}">${esc(model)}</span>
+      <span class="model-name" title="${esc(model)}">${esc(model)}</span>
+      <input class="model-alias" type="text" value="${esc(alias)}" placeholder="${esc(ui('模型别名（可选）'))}" aria-label="${esc(ui('为 {model} 设置别名', { model }))}" />
       <label><input type="checkbox" data-capability="vision" ${platform.visionModels.includes(model) ? 'checked' : ''}/> ${esc(ui('反推'))}</label>
       <label><input type="checkbox" data-capability="image" ${platform.imageModels.includes(model) ? 'checked' : ''}/> ${esc(ui('生图'))}</label>
       <button class="model-remove" type="button" title="${esc(ui('移除模型'))}" aria-label="${esc(ui('移除模型'))}">×</button>
@@ -164,7 +167,7 @@ function renderPlatforms() {
         <span class="platform-status">${esc(platformStatus.get(platform.id) || '')}</span>
       </div>
       <div class="model-head">
-        <span>${esc(ui('模型名称与启用能力'))}</span>
+        <span>${esc(ui('模型名称、别名与启用能力'))}</span>
         <label class="model-filter-toggle"><input class="show-disabled-models" type="checkbox" ${state.showDisabledModels ? 'checked' : ''}/> ${esc(ui('显示未启用模型'))}</label>
       </div>
       <div class="model-list">${modelRows(platform)}</div>`;
@@ -195,6 +198,7 @@ function bindPlatformCard(card, platform) {
     if (!presetId) {
       if (platform.preset !== 'custom') {
         platform.models = [];
+        platform.modelAliases = {};
         platform.visionModels = [];
         platform.imageModels = [];
         platform.imageEditModels = [];
@@ -210,6 +214,7 @@ function bindPlatformCard(card, platform) {
       ...(preset.imageModels || []),
       ...(preset.disabledModels || [])
     ])];
+    platform.modelAliases = {};
     platform.visionModels = [...(preset.visionModels || [])];
     platform.imageModels = [...(preset.imageModels || [])];
     platform.imageEditModels = [...(preset.imageEditModels || [])];
@@ -279,10 +284,21 @@ function bindPlatformCard(card, platform) {
       : platform[key].filter((item) => item !== model);
     renderPlatforms();
   });
+  card.querySelector('.model-list').addEventListener('input', (e) => {
+    if (!e.target.classList.contains('model-alias')) return;
+    const model = e.target.closest('.model-row')?.dataset.model;
+    if (!model) return;
+    platform.modelAliases ||= {};
+    const alias = e.target.value.trim();
+    if (alias) platform.modelAliases[model] = alias;
+    else delete platform.modelAliases[model];
+    renderDefaults();
+  });
   card.querySelector('.model-list').addEventListener('click', (e) => {
     if (!e.target.classList.contains('model-remove')) return;
     const model = e.target.closest('.model-row')?.dataset.model;
     platform.models = platform.models.filter((item) => item !== model);
+    if (platform.modelAliases) delete platform.modelAliases[model];
     platform.visionModels = platform.visionModels.filter((item) => item !== model);
     platform.imageModels = platform.imageModels.filter((item) => item !== model);
     platform.imageEditModels = (platform.imageEditModels || []).filter((item) => item !== model);

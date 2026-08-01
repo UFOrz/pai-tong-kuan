@@ -112,8 +112,23 @@ let albumWindowId = null;
 let searchTimer = 0;
 let pageLoadSeq = 0;
 let currentLanguage = 'zh';
+let modelAliasIndex = new Map();
 let masonryLayoutFrame = 0;
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
+
+function updateModelAliasIndex(settings) {
+  modelAliasIndex = new Map();
+  for (const platform of settings?.platforms || []) {
+    for (const [model, alias] of Object.entries(platform.modelAliases || {})) {
+      const cleanAlias = String(alias || '').trim();
+      if (cleanAlias) modelAliasIndex.set(`${platform.name}\n${model}`, cleanAlias);
+    }
+  }
+}
+
+function displayedRecordModel(rec) {
+  return modelAliasIndex.get(`${rec.provider || ''}\n${rec.model || ''}`) || rec.model || '';
+}
 
 function recordExplanationVisible(rec) {
   const language = rec.explanationLanguage || (rec.promptZh ? 'zh' : '');
@@ -293,7 +308,7 @@ function renderGrid() {
     }
     const m = document.createElement('div');
     m.className = 'm';
-    m.textContent = `${fmtTime(rec.createdAt)} · ${rec.model || ''}`;
+    m.textContent = `${fmtTime(rec.createdAt)} · ${displayedRecordModel(rec)}`;
     foot.append(p);
     if (zh) foot.append(zh);
     foot.append(m);
@@ -394,7 +409,7 @@ function openLightbox(id) {
   }
 
   els.lbProvider.textContent = rec.provider || '-';
-  els.lbModel.textContent = rec.model || '-';
+  els.lbModel.textContent = displayedRecordModel(rec) || '-';
   els.lbSize.textContent = rec.width && rec.height
     ? t('{width} × {height} 像素', { width: rec.width, height: rec.height }, currentLanguage)
     : '-';
@@ -956,6 +971,7 @@ async function loadPage(offset = 0, requestedId = '') {
 (async function init() {
   const settings = await loadSettings();
   currentLanguage = resolveLanguage(settings.language);
+  updateModelAliasIndex(settings);
   localizeDocument(currentLanguage);
   const currentWindow = await chrome.windows.getCurrent();
   albumWindowId = currentWindow?.id;
@@ -967,6 +983,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
   if (!changes.settings) return;
   void loadSettings().then((settings) => {
     currentLanguage = resolveLanguage(settings.language);
+    updateModelAliasIndex(settings);
     localizeDocument(currentLanguage);
     renderGrid();
     if (currentLbId) openLightbox(currentLbId);
