@@ -124,10 +124,11 @@ body {
 }
 
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 14px;
-  padding: 16px 20px 40px;
+  --gallery-min-card-width: 228px;
+  --gallery-gap: 16px;
+  position: relative;
+  width: 100%;
+  padding: 16px 24px 40px;
 }
 
 .pager {
@@ -178,12 +179,17 @@ body {
 }
 
 .card {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--gallery-min-card-width);
+  margin: 0;
   background: #fff;
   border: 1px solid #ececf2;
   border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
+  text-align: left;
   transition: box-shadow .15s ease, transform .15s ease;
 }
 .card:hover { box-shadow: 0 6px 20px rgba(80, 70, 160, .13); transform: translateY(-2px); }
@@ -191,8 +197,7 @@ body {
 
 .card .thumb {
   width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
+  height: auto;
   display: block;
   background: #f0f0f5;
 }
@@ -582,6 +587,14 @@ body {
   .lb-nav.next { right: -38px; }
 }
 
+@media (max-width: 640px) {
+  .grid {
+    --gallery-min-card-width: 160px;
+    --gallery-gap: 12px;
+    padding: 12px 12px 28px;
+  }
+}
+
 @media (max-width: 520px) {
   .download-progress { top: 154px; align-items: stretch; margin-inline: 10px; }
   .download-progress .btn { padding-inline: 10px; }
@@ -590,6 +603,14 @@ body {
   .page-numbers { gap: 4px; }
   .page-number { width: 30px; height: 30px; border-radius: 8px; }
   .page-ellipsis { min-width: 14px; }
+}
+
+@media (max-width: 360px) {
+  .grid {
+    --gallery-min-card-width: 140px;
+    --gallery-gap: 10px;
+    padding-inline: 10px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

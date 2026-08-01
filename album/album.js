@@ -15,6 +15,7 @@ import { detectImageFileType, normalizeImageMime } from '../lib/image-file.js';
 import { buildZip, blobToU8, writeZipStream } from '../lib/zip.js';
 import { scopedSessionKey } from '../lib/task-state.js';
 import { paginationItems } from '../lib/pagination.js';
+import { masonryColumns, masonryLayout } from '../lib/masonry.js';
 import { explanationLabel, localizeDocument, resolveLanguage, t } from '../lib/i18n.js';
 import { loadSettings } from '../lib/settings.js';
 
@@ -111,6 +112,7 @@ let albumWindowId = null;
 let searchTimer = 0;
 let pageLoadSeq = 0;
 let currentLanguage = 'zh';
+let masonryLayoutFrame = 0;
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
 
 function recordExplanationVisible(rec) {
@@ -194,8 +196,45 @@ function applyFilter() {
   renderGrid();
 }
 
+function layoutMasonry() {
+  masonryLayoutFrame = 0;
+  const cards = [...els.grid.querySelectorAll(':scope > .card')];
+  if (!cards.length) {
+    els.grid.style.height = '';
+    return;
+  }
+  const gridStyle = getComputedStyle(els.grid);
+  const paddingTop = Number.parseFloat(gridStyle.paddingTop) || 0;
+  const paddingRight = Number.parseFloat(gridStyle.paddingRight) || 0;
+  const paddingBottom = Number.parseFloat(gridStyle.paddingBottom) || 0;
+  const paddingLeft = Number.parseFloat(gridStyle.paddingLeft) || 0;
+  const gap = Number.parseFloat(gridStyle.getPropertyValue('--gallery-gap')) || 16;
+  const minCardWidth = Number.parseFloat(gridStyle.getPropertyValue('--gallery-min-card-width')) || 228;
+  const availableWidth = Math.max(minCardWidth, els.grid.clientWidth - paddingLeft - paddingRight);
+  const columns = masonryColumns({ availableWidth, minCardWidth, gap });
+  cards.forEach((card) => { card.style.width = `${columns.cardWidth}px`; });
+  const layout = masonryLayout(cards.map((card) => card.offsetHeight), {
+    columnCount: columns.columnCount,
+    cardWidth: columns.cardWidth,
+    gap
+  });
+  const startX = paddingLeft + Math.max(0, (availableWidth - columns.width) / 2);
+  cards.forEach((card, index) => {
+    const position = layout.positions[index];
+    card.style.left = `${Math.round(startX + position.x)}px`;
+    card.style.top = `${Math.round(paddingTop + position.y)}px`;
+  });
+  els.grid.style.height = `${Math.ceil(paddingTop + layout.height + paddingBottom)}px`;
+}
+
+function scheduleMasonryLayout() {
+  if (masonryLayoutFrame) return;
+  masonryLayoutFrame = requestAnimationFrame(layoutMasonry);
+}
+
 function renderGrid() {
   els.grid.innerHTML = '';
+  els.grid.style.height = '';
   els.empty.hidden = filtered.length > 0;
   if (!filtered.length) {
     const isSearchEmpty = Boolean(els.searchInput.value.trim());
@@ -216,6 +255,14 @@ function renderGrid() {
     img.loading = 'lazy';
     img.src = urlOf(rec);
     img.alt = rec.prompt || '';
+    img.addEventListener('load', scheduleMasonryLayout, { once: true });
+    img.addEventListener('error', scheduleMasonryLayout, { once: true });
+    const intrinsicWidth = Number(rec.width);
+    const intrinsicHeight = Number(rec.height);
+    if (intrinsicWidth > 0 && intrinsicHeight > 0) {
+      img.width = Math.round(intrinsicWidth);
+      img.height = Math.round(intrinsicHeight);
+    }
 
     const check = document.createElement('div');
     check.className = 'check';
@@ -255,6 +302,7 @@ function renderGrid() {
     card.addEventListener('click', () => openLightbox(rec.id));
     els.grid.appendChild(card);
   }
+  layoutMasonry();
   updateSelUI();
   updatePager();
 }
@@ -779,6 +827,7 @@ els.pageNumbers.addEventListener('click', (event) => {
 
 let compactPager = window.innerWidth <= 520;
 window.addEventListener('resize', () => {
+  scheduleMasonryLayout();
   const nextCompact = window.innerWidth <= 520;
   if (nextCompact === compactPager) return;
   compactPager = nextCompact;
@@ -925,6 +974,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
 });
 
 window.addEventListener('pagehide', () => {
+  if (masonryLayoutFrame) cancelAnimationFrame(masonryLayoutFrame);
   clearTimeout(searchTimer);
   clearTimeout(downloadProgressTimer);
   downloadController?.abort();
