@@ -184,7 +184,7 @@ async function refreshContextMenus() {
   const language = resolveLanguage(settings.language, [chrome.i18n?.getUILanguage?.() || navigator.language]);
   await chrome.contextMenus.removeAll().catch(() => {});
   chrome.contextMenus.create({ id: MENU_IMAGE, title: t('✨ 反推提示词并生成同款', {}, language), contexts: ['image'] });
-  chrome.contextMenus.create({ id: MENU_ALBUM, title: t('🖼 打开拍同款相册', {}, language), contexts: ['image', 'page'] });
+  chrome.contextMenus.create({ id: MENU_ALBUM, title: t('🖼 打开 EchoShot · 拍同款相册', {}, language), contexts: ['image', 'page'] });
 }
 
 chrome.storage.local.onChanged.addListener((changes) => {

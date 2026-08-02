@@ -1820,7 +1820,7 @@ async function handleAlbumAction() {
   if (!rec) return showToast(ui('未找到相册作品'));
   const dataUrl = await blobToDataUrl(rec.blob);
   const prepared = { requestId: crypto.randomUUID(), ts: Date.now(), status: 'ready', needsReverse: false,
-    src: rec.srcUrl || '', pageUrl: rec.pageUrl || '', pageTitle: '来自拍同款相册', dataUrl,
+    src: rec.srcUrl || '', pageUrl: rec.pageUrl || '', pageTitle: '来自 EchoShot · 拍同款相册', dataUrl,
     width: rec.width, height: rec.height, mime: rec.blob.type || 'image/png', sourceAssetId: `record:${rec.id}` };
   await setWindowSession('pendingSource', prepared);
   applySource(prepared);
@@ -1842,7 +1842,7 @@ function downloadCurrent() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   a.download =
-    `拍同款_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
+    `EchoShot_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
     `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`;
   a.href = lastResult.dataUrl;
   a.click();

@@ -26,7 +26,7 @@ body {
   border-bottom: 1px solid #ececf2;
 }
 .topbar .logo { width: 22px; height: 22px; border-radius: 6px; }
-.topbar h1 { font-size: 15px; margin: 0; flex: 1; }
+.topbar h1 { min-width: 0; margin: 0; overflow: hidden; flex: 1; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; }
 .top-actions { position: relative; display: flex; gap: 3px; overflow: visible; }
 
 .icon-btn {
@@ -54,6 +54,7 @@ body {
 
 @media (max-width: 370px) {
   .topbar { gap: 5px; padding-inline: 9px; }
+  .topbar h1 { overflow: visible; font-size: 14px; line-height: 1.15; white-space: normal; text-overflow: clip; }
   .top-actions { gap: 1px; }
   .icon-btn { width: 29px; height: 30px; }
   .tool-icon { width: 17px; height: 17px; }

@@ -1,6 +1,6 @@
-# 拍同款（Pai Tong Kuan）
+# EchoShot · 拍同款
 
-拍同款是一款基于 Chrome Manifest V3 的浏览器扩展。用户可以从网页图片或框选截图中反推生图提示词，生成同款图片，并在本机相册中管理结果。
+EchoShot · 拍同款是一款基于 Chrome Manifest V3 的浏览器扩展。用户可以从网页图片或框选截图中反推生图提示词，生成同款图片，并在本机相册中管理结果。
 
 本仓库只公开实际发布到浏览器扩展商店的软件包内容，以及开源所必需的说明和许可证；内部备份、商店审核材料、历史安装包和开发过程文件不包含在本仓库中。
 
@@ -76,7 +76,7 @@
 
 ## English
 
-Pai Tong Kuan is a Chrome Manifest V3 extension for reconstructing image-generation prompts from user-selected web images or captured page regions, generating matching images, replacing characters or objects, and managing results in a local gallery.
+EchoShot · 拍同款 is a Chrome Manifest V3 extension for reconstructing image-generation prompts from user-selected web images or captured page regions, generating matching images, replacing characters or objects, and managing results in a local gallery.
 
 Users provide their own API keys. Source images, prompts, reference assets, and generated results are stored locally, except when the user explicitly starts a task that sends the required data to the selected AI provider.
 

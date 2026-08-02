@@ -369,12 +369,12 @@ function settingsExportName() {
   const date = new Date();
   const pad = (value) => String(value).padStart(2, '0');
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-  return `pai-tong-kuan-settings-${stamp}.json`;
+  return `EchoShot-settings-${stamp}.json`;
 }
 
 function downloadSettingsFile(settings) {
   const payload = {
-    format: 'pai-tong-kuan-settings',
+    format: 'echoshot-settings',
     version: 1,
     exportedAt: new Date().toISOString(),
     settings
@@ -392,8 +392,9 @@ function importedSettingsFrom(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(ui('配置文件格式无效'));
   }
-  if (value.format && value.format !== 'pai-tong-kuan-settings') {
-    throw new Error(ui('不是拍同款配置文件'));
+  const supportedFormats = new Set(['echoshot-settings', 'pai-tong-kuan-settings']);
+  if (value.format && !supportedFormats.has(value.format)) {
+    throw new Error(ui('不是 EchoShot · 拍同款配置文件'));
   }
   const imported = value.settings && typeof value.settings === 'object' ? value.settings : value;
   if (!Array.isArray(imported.platforms) || !imported.defaults || typeof imported.defaults !== 'object') {

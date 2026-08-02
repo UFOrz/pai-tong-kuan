@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "拍同款",
-  "version": "2.1.8",
+  "name": "EchoShot · 拍同款",
+  "version": "2.1.9",
   "description": "悬停网页图片，一键反推 AI 提示词并生成同款图片，内置相册管理历史作品。",
   "minimum_chrome_version": "116",
   "icons": {
@@ -11,7 +11,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "拍同款",
+    "default_title": "EchoShot · 拍同款",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

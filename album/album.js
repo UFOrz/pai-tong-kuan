@@ -175,7 +175,7 @@ function fileNameOf(rec, idx, ext = 'png') {
     `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
     `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   const suffix = idx > 0 ? `_${idx + 1}` : '';
-  return `拍同款_${stamp}${suffix}.${ext}`;
+  return `EchoShot_${stamp}${suffix}.${ext}`;
 }
 
 function urlOf(rec) {
@@ -581,7 +581,7 @@ async function downloadRecords(list) {
   showToast(ui('正在打包 {count} 张图片…', { count: list.length }));
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
-  const stem = `拍同款相册_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const stem = `EchoShot_相册_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
   const batchCount = Math.ceil(list.length / ZIP_BATCH_SIZE);
   if (batchCount > 1) showToast(ui('为降低内存占用，将下载 {count} 个 ZIP 分包；请允许多文件下载', { count: batchCount }));
   for (let start = 0; start < list.length; start += ZIP_BATCH_SIZE) {
@@ -606,7 +606,7 @@ async function downloadRecords(list) {
 function albumZipFileName() {
   const date = new Date();
   const pad = (value) => String(value).padStart(2, '0');
-  return `拍同款相册_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}.zip`;
+  return `EchoShot_相册_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}.zip`;
 }
 
 function updateDownloadProgress(completed, total, key = '正在打包第 {current}/{total} 张图片…') {
