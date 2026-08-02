@@ -786,6 +786,7 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
       cfg,
       prompt: prompt.trim(),
       ratio,
+      size,
       sourceDataUrl: '',
       resolution
     });
@@ -894,7 +895,7 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
     if (!runningHubNeedsSource(cfg.model)) {
       return { ok: false, error: '请选择 RunningHUB 的 image-to-image 或 edit 模型' };
     }
-    r = await generateRunningHubImage({ cfg, prompt: prompt.trim(), ratio, sourceDataUrl, referenceDataUrl, resolution });
+    r = await generateRunningHubImage({ cfg, prompt: prompt.trim(), ratio, size, sourceDataUrl, referenceDataUrl, resolution });
   } else if (cfg.apiType === 'runninghub-workflow-v2') {
     return { ok: false, error: '当前 RunningHUB 工作流不支持角色替换，请选择图生图或 edit 模型' };
   } else if (cfg.preset === 'modelscope') {
