@@ -1,6 +1,6 @@
 // 后台 Service Worker：消息路由、来源图片抓取、反推与生图调用、侧边栏/相册打开
 
-import { apiBaseUrlError, imageEditReferenceLimit, isModelScopeImageEditModel, loadSettings, providerLabel, requiresSourceImage, resolveModelConfig } from './lib/settings.js';
+import { apiBaseUrlError, imageEditReferenceLimit, isAtlasCloudNanoBananaEditModel, isModelScopeImageEditModel, loadSettings, providerLabel, requiresSourceImage, resolveModelConfig } from './lib/settings.js';
 import {
   normalizeImageBlob,
   blobFromDataUrl,
@@ -811,7 +811,7 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
 }
 
 function supportsAtlasCloudEditModel(model) {
-  return /^(google\/nano-banana-2-lite\/edit|openai\/gpt-image-2\/edit)$/i.test(String(model || ''));
+  return isAtlasCloudNanoBananaEditModel(model) || /^openai\/gpt-image-2\/edit$/i.test(String(model || ''));
 }
 
 async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUrl = '' } = {}) {
@@ -879,7 +879,7 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
     });
   } else if (cfg.apiType === 'atlascloud-image-v1') {
     if (!supportsAtlasCloudEditModel(cfg.model)) {
-      return { ok: false, error: '请选择 AtlasCloud 的 google/nano-banana-2-lite/edit 或 openai/gpt-image-2/edit 模型' };
+      return { ok: false, error: '请选择 AtlasCloud 的 Nano Banana 编辑模型或 openai/gpt-image-2/edit 模型' };
     }
     r = await generateAtlasCloudImageEdit({
       cfg,
