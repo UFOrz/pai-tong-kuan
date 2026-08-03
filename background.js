@@ -675,6 +675,7 @@ async function doReverse({ sourceRequestId, sourceTs, selection, windowId } = {}
     ok: true,
     sourceRequestId: source.requestId,
     sourceTs: source.ts,
+    platformId: cfg.platformId,
     provider: providerLabel(cfg),
     model: cfg.model,
     ...r
@@ -708,6 +709,7 @@ async function doSurprise({ selection, sourceRequestId, sourceTs, ratio, windowI
       sourceTs,
       ratio,
       windowId,
+      platformId: cfg.platformId,
       provider: providerLabel(cfg),
       model: cfg.model
     };
@@ -805,6 +807,7 @@ async function doGenerate({ prompt, ratio, selection, sourceRequestId, sourceTs,
     ...r,
     ratio,
     size: r.size || size,
+    platformId: cfg.platformId,
     provider: providerLabel(cfg),
     model: cfg.model
   };
@@ -929,7 +932,15 @@ async function doEdit({ prompt, ratio, selection, sourceDataUrl, referenceDataUr
   } else {
     r = await generateImageEdit({ cfg, prompt: prompt.trim(), sourceDataUrl, referenceDataUrl, size, quality });
   }
-  return { ok: true, ...r, ratio, size: r.size || size, provider: providerLabel(cfg), model: cfg.model };
+  return {
+    ok: true,
+    ...r,
+    ratio,
+    size: r.size || size,
+    platformId: cfg.platformId,
+    provider: providerLabel(cfg),
+    model: cfg.model
+  };
 }
 
 // ---------- 可恢复的后台生成任务 ----------
@@ -967,6 +978,7 @@ async function saveGeneratedRecord(resp, {
     sourcePrompt: sourcePrompt || prompt,
     promptZh: promptZh || '',
     explanationLanguage: explanationLanguage || '',
+    platformId: resp.platformId || '',
     provider: resp.provider,
     model: resp.model,
     width: resp.width,

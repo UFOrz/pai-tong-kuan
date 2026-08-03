@@ -17,7 +17,7 @@ import { scopedSessionKey } from '../lib/task-state.js';
 import { paginationItems } from '../lib/pagination.js';
 import { masonryColumns, masonryLayout } from '../lib/masonry.js';
 import { explanationLabel, localizeDocument, resolveLanguage, t } from '../lib/i18n.js';
-import { loadSettings } from '../lib/settings.js';
+import { buildModelAliasIndex, loadSettings, recordModelDisplayName } from '../lib/settings.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -112,22 +112,21 @@ let albumWindowId = null;
 let searchTimer = 0;
 let pageLoadSeq = 0;
 let currentLanguage = 'zh';
-let modelAliasIndex = new Map();
+let modelAliasIndex = buildModelAliasIndex({ platforms: [] });
 let masonryLayoutFrame = 0;
 const ui = (key, vars = {}) => t(key, vars, currentLanguage);
 
 function updateModelAliasIndex(settings) {
-  modelAliasIndex = new Map();
-  for (const platform of settings?.platforms || []) {
-    for (const [model, alias] of Object.entries(platform.modelAliases || {})) {
-      const cleanAlias = String(alias || '').trim();
-      if (cleanAlias) modelAliasIndex.set(`${platform.name}\n${model}`, cleanAlias);
-    }
-  }
+  modelAliasIndex = buildModelAliasIndex(settings);
 }
 
 function displayedRecordModel(rec) {
-  return modelAliasIndex.get(`${rec.provider || ''}\n${rec.model || ''}`) || rec.model || '';
+  return recordModelDisplayName(modelAliasIndex, rec);
+}
+
+function searchTermsForRecord(rec) {
+  const displayedModel = displayedRecordModel(rec);
+  return displayedModel && displayedModel !== rec.model ? [displayedModel] : [];
 }
 
 function recordExplanationVisible(rec) {
@@ -769,7 +768,7 @@ async function deleteRecords(ids) {
   }
   records = records.filter((r) => !ids.includes(r.id));
   [totalRecords, totalAlbumRecords] = await Promise.all([
-    countAll(els.searchInput.value.trim()),
+    countAll(els.searchInput.value.trim(), { searchTermsForRecord }),
     countAll('')
   ]);
   if (!records.length && pageOffset > 0) {
@@ -944,8 +943,8 @@ async function loadPage(offset = 0, requestedId = '') {
   const requestSeq = ++pageLoadSeq;
   const query = els.searchInput.value.trim();
   const [{ records: pageRecords, hasMore: nextPage }, total, albumTotal] = await Promise.all([
-    getPage({ offset, limit: PAGE_SIZE, query }),
-    countAll(query),
+    getPage({ offset, limit: PAGE_SIZE, query, searchTermsForRecord }),
+    countAll(query, { searchTermsForRecord }),
     countAll('')
   ]);
   if (requestSeq !== pageLoadSeq) return;
@@ -985,8 +984,12 @@ chrome.storage.local.onChanged.addListener((changes) => {
     currentLanguage = resolveLanguage(settings.language);
     updateModelAliasIndex(settings);
     localizeDocument(currentLanguage);
-    renderGrid();
-    if (currentLbId) openLightbox(currentLbId);
+    if (els.searchInput.value.trim()) {
+      void loadPage(0);
+    } else {
+      renderGrid();
+      if (currentLbId) openLightbox(currentLbId);
+    }
   });
 });
 
