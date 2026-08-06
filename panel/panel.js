@@ -1,7 +1,14 @@
 // 侧边栏面板：来源图片 → 反推提示词 → 生成同款图片 → 自动存入相册
 
-import { imageEditReferenceLimit, listModelChoices, loadSettings, requiresSourceImage, saveSettings, supportsImageEdit } from '../lib/settings.js';
+import { buildModelAliasIndex, imageEditReferenceLimit, listModelChoices, loadSettings, recordModelDisplayName, requiresSourceImage, saveSettings, supportsImageEdit } from '../lib/settings.js';
 import { getById, addCharacter, getCharacters, getCharacterById, removeCharacters } from '../lib/db.js';
+import { detectImageFileType } from '../lib/image-file.js';
+import {
+  buildEchoShotMetadata,
+  embedEchoShotMetadata,
+  promptFromImageGenerationMetadata,
+  readImageGenerationMetadata
+} from '../lib/image-metadata.js';
 import {
   normalizedWindowId,
   scopedSessionKey,
@@ -175,6 +182,7 @@ const els = {
   btnRegen: $('btnRegen'),
   btnGoAlbum: $('btnGoAlbum'),
   saveState: $('saveState'),
+  dropOverlay: $('dropOverlay'),
   toast: $('toast')
 };
 
@@ -210,6 +218,8 @@ let visibleReverseJobState = null;
 let visibleReverseJobTimer = 0;
 let resultRevealToken = 0;
 let regionCaptureActive = false;
+let dragDepth = 0;
+let droppedImageSeq = 0;
 let surpriseMode = false;
 let surpriseGenerating = false;
 let currentSurpriseProfile = '';
@@ -349,6 +359,12 @@ function showToast(text) {
 
 function show(el, yes = true) { el.hidden = !yes; }
 
+function setPromptDoneLabel(fromMetadata = false) {
+  els.reverseDone.textContent = ui(fromMetadata
+    ? '✓ 已读取图片中的提示词，可直接编辑'
+    : '✓ 反推成功，可直接编辑提示词');
+}
+
 function revealGeneratedResult() {
   const token = ++resultRevealToken;
   const reveal = () => {
@@ -429,6 +445,160 @@ function blobToDataUrl(blob) {
     reader.readAsDataURL(blob);
   });
 }
+
+async function normalizeDroppedImage(blob, maxDimension = 2048) {
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const width = bitmap.width;
+    const height = bitmap.height;
+    const scale = Math.min(1, maxDimension / Math.max(width, height)) || 1;
+    const outputWidth = Math.max(1, Math.round(width * scale));
+    const outputHeight = Math.max(1, Math.round(height * scale));
+    let output = blob;
+    if (scale < 1 || !/^image\/(?:jpeg|png|webp)$/i.test(blob.type || '')) {
+      const canvas = document.createElement('canvas');
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('浏览器无法处理这张图片');
+      context.drawImage(bitmap, 0, 0, outputWidth, outputHeight);
+      output = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (result) => result ? resolve(result) : reject(new Error('图片转换失败')),
+          'image/webp',
+          0.92
+        );
+      });
+    }
+    return {
+      dataUrl: await blobToDataUrl(output),
+      width,
+      height,
+      mime: output.type || 'image/png'
+    };
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+function isImageDrop(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes('Files');
+}
+
+function setDropOverlay(visible) {
+  document.body.classList.toggle('drag-active', visible);
+  show(els.dropOverlay, visible);
+}
+
+function firstDroppedImage(dataTransfer) {
+  const files = [...(dataTransfer?.files || [])];
+  return files.find((file) => /^image\//i.test(file.type || '') ||
+    /\.(?:png|jpe?g|webp|gif|avif|svg)$/i.test(file.name || '')) || null;
+}
+
+async function handleDroppedImage(file) {
+  if (!privacyConsentGranted) {
+    renderPrivacyRequired();
+    throw new Error(ui('请先同意数据使用方式'));
+  }
+  const operation = ++droppedImageSeq;
+  showToast(ui('正在读取图片元数据…'));
+  const embeddedMetadata = await readImageGenerationMetadata(file);
+  const prompt = promptFromImageGenerationMetadata(embeddedMetadata);
+  const normalized = await normalizeDroppedImage(file, 2048);
+  if (operation !== droppedImageSeq) return;
+
+  const requestId = crypto.randomUUID();
+  const timestamp = Date.now();
+  const prepared = {
+    requestId,
+    ts: timestamp,
+    status: 'ready',
+    needsReverse: !prompt,
+    embeddedMetadata: Boolean(prompt),
+    metadataSource: prompt ? String(embeddedMetadata?.generatorLabel || embeddedMetadata?.software || '') : '',
+    sourceAssetId: `drop:${requestId}`,
+    src: '',
+    pageUrl: '',
+    pageTitle: file.name || ui('来自拖入的本地图片'),
+    dataUrl: normalized.dataUrl,
+    width: normalized.width,
+    height: normalized.height,
+    mime: normalized.mime
+  };
+
+  if (prompt) {
+    const ratio = String(embeddedMetadata?.ratio || '');
+    const task = {
+      sourceRequestId: requestId,
+      sourceTs: timestamp,
+      prompt,
+      sourcePrompt: prompt,
+      promptZh: '',
+      explanationLanguage: '',
+      ratio: [...els.selRatio.options].some((option) => option.value === ratio)
+        ? ratio
+        : els.selRatio.value,
+      metadataRead: true,
+      metadataSource: prepared.metadataSource,
+      updatedAt: Date.now()
+    };
+    await Promise.all([
+      setWindowSession('pendingSource', prepared),
+      setWindowSession('panelTask', task)
+    ]);
+    if (operation !== droppedImageSeq) return;
+    applySource(prepared);
+    await restoreTask(prepared);
+    setPromptDoneLabel(true);
+    showToast(prepared.metadataSource
+      ? ui('已从 {source} 元数据读取提示词', { source: prepared.metadataSource })
+      : ui('已读取图片中的提示词'));
+    return;
+  }
+
+  await Promise.all([
+    setWindowSession('pendingSource', prepared),
+    removeWindowSession('panelTask')
+  ]);
+  if (operation !== droppedImageSeq) return;
+  applySource(prepared);
+  showToast(ui('图片没有可识别的生成提示词，正在反推'));
+}
+
+document.addEventListener('dragenter', (event) => {
+  if (!isImageDrop(event.dataTransfer)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  setDropOverlay(true);
+});
+
+document.addEventListener('dragover', (event) => {
+  if (!isImageDrop(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+});
+
+document.addEventListener('dragleave', (event) => {
+  if (!isImageDrop(event.dataTransfer)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) setDropOverlay(false);
+});
+
+document.addEventListener('drop', (event) => {
+  if (!isImageDrop(event.dataTransfer)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  setDropOverlay(false);
+  const file = firstDroppedImage(event.dataTransfer);
+  if (!file) {
+    showToast(ui('只支持拖入图片文件'));
+    return;
+  }
+  void handleDroppedImage(file).catch((error) => {
+    showToast(ui('图片读取失败：{error}', { error: error?.message || String(error) }));
+  });
+});
 
 function renderPrivacyRequired() {
   show(els.secPrivacy, true);
@@ -511,6 +681,7 @@ function resetTaskUI() {
   show(els.genDone, false);
   show(els.genError, false);
   show(els.genProgress, false);
+  setPromptDoneLabel(false);
   show(els.reverseDone, false);
   show(els.reverseError, false);
   show(els.reverseLoading, false);
@@ -598,6 +769,7 @@ async function restoreTask(taskSource) {
   reversedPromptLanguage = panelTask.explanationLanguage || (reversedPromptZh ? 'zh' : '');
   els.taPrompt.value = panelTask.prompt || reversedPrompt;
   els.taPrompt.placeholder = ui('可以直接编辑提示词');
+  setPromptDoneLabel(Boolean(taskSource.embeddedMetadata));
   show(els.reverseDone, Boolean(els.taPrompt.value));
   if (reversedPromptZh && reversedPromptLanguage === currentLanguage && currentLanguage !== 'en') {
     els.zhNote.textContent = explanationLabel(currentLanguage) + '：' + reversedPromptZh;
@@ -827,7 +999,10 @@ function applySource(s) {
   show(els.secEmpty, false);
   show(els.secSource, true);
 
-  els.srcMeta.textContent = s.pageTitle || s.pageUrl || '';
+  els.srcMeta.textContent = [
+    s.pageTitle || s.pageUrl || '',
+    s.metadataSource ? ui('元数据：{source}', { source: s.metadataSource }) : ''
+  ].filter(Boolean).join(' · ');
   if (s.status === 'loading') {
     els.srcImg.removeAttribute('src');
     show(els.srcImg, false);
@@ -991,6 +1166,7 @@ async function autoReverse() {
         show(els.zhNote, true);
       }
       els.taPrompt.placeholder = ui('可以直接编辑提示词');
+      setPromptDoneLabel(false);
       show(els.reverseDone, true);
       void persistTask();
     } else {
@@ -1025,6 +1201,7 @@ function applyReverseResult(result) {
   } else {
     show(els.zhNote, false);
   }
+  setPromptDoneLabel(false);
   show(els.reverseDone, true);
 }
 
@@ -1835,17 +2012,41 @@ async function handleAlbumAction() {
   else if (albumAction.action === 'group') await generateGroup(Number(albumAction.count || 4));
 }
 
-function downloadCurrent() {
+async function downloadCurrent() {
   if (!lastResult) return;
-  const a = document.createElement('a');
-  const ext = (lastResult.mime || 'image/png').split('/')[1] || 'png';
+  const record = lastAlbumRecordId ? await getById(lastAlbumRecordId) : null;
+  const rawBlob = record?.blob || await fetch(lastResult.dataUrl).then((response) => {
+    if (!response.ok) throw new Error(`读取生成图片失败 HTTP ${response.status}`);
+    return response.blob();
+  });
+  const metadataRecord = record || {
+    createdAt: Date.now(),
+    prompt: els.taPrompt.value.trim(),
+    requestPrompt: els.taPrompt.value.trim(),
+    provider: lastResult.provider,
+    model: lastResult.model,
+    ratio: lastResult.ratio,
+    size: lastResult.size,
+    width: lastResult.width,
+    height: lastResult.height
+  };
+  const displayModel = recordModelDisplayName(buildModelAliasIndex(settings || { platforms: [] }), metadataRecord);
+  const embedded = await embedEchoShotMetadata(rawBlob, buildEchoShotMetadata(metadataRecord, {
+    displayModel,
+    version: chrome.runtime.getManifest().version
+  }));
+  if (!embedded.embedded) throw new Error(ui('当前图片格式不支持嵌入生成信息'));
+  const { ext } = await detectImageFileType(embedded.blob);
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(embedded.blob);
   a.download =
     `EchoShot_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
     `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`;
-  a.href = lastResult.dataUrl;
+  a.href = url;
   a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 function openCurrentResultInAlbum() {
@@ -1868,7 +2069,11 @@ els.btnCopyPrompt.addEventListener('click', async () => {
 els.btnGenerate.addEventListener('click', generate);
 els.btnRegen.addEventListener('click', generate);
 els.btnCancelGroup.addEventListener('click', cancelGroupJob);
-els.btnDownload.addEventListener('click', downloadCurrent);
+els.btnDownload.addEventListener('click', () => {
+  void downloadCurrent().catch((error) => showToast(ui('下载失败：{error}', {
+    error: error?.message || String(error)
+  })));
+});
 els.resImg.addEventListener('click', openCurrentResultInAlbum);
 els.resImg.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;

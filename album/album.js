@@ -12,6 +12,7 @@ import {
   removeMany
 } from '../lib/db.js';
 import { detectImageFileType, normalizeImageMime } from '../lib/image-file.js';
+import { buildEchoShotMetadata, embedEchoShotMetadata } from '../lib/image-metadata.js';
 import { buildZip, blobToU8, writeZipStream } from '../lib/zip.js';
 import { scopedSessionKey } from '../lib/task-state.js';
 import { paginationItems } from '../lib/pagination.js';
@@ -122,6 +123,19 @@ function updateModelAliasIndex(settings) {
 
 function displayedRecordModel(rec) {
   return recordModelDisplayName(modelAliasIndex, rec);
+}
+
+function generationMetadataForRecord(rec) {
+  return buildEchoShotMetadata(rec, {
+    displayModel: displayedRecordModel(rec),
+    version: chrome.runtime.getManifest().version
+  });
+}
+
+async function downloadableRecordBlob(rec) {
+  const result = await embedEchoShotMetadata(rec.blob, generationMetadataForRecord(rec));
+  if (!result.embedded) throw new Error(ui('当前图片格式不支持嵌入生成信息'));
+  return result.blob;
 }
 
 function searchTermsForRecord(rec) {
@@ -574,7 +588,7 @@ async function downloadRecords(list) {
   if (!list.length) return;
   if (list.length === 1) {
     const { ext } = await detectImageFileType(list[0].blob);
-    downloadBlob(await normalizeImageMime(list[0].blob), fileNameOf(list[0], 0, ext));
+    downloadBlob(await normalizeImageMime(await downloadableRecordBlob(list[0])), fileNameOf(list[0], 0, ext));
     return;
   }
   showToast(ui('正在打包 {count} 张图片…', { count: list.length }));
@@ -593,7 +607,7 @@ async function downloadRecords(list) {
       let i = 1;
       while (usedNames.has(name)) name = fileNameOf(rec, i++, ext);
       usedNames.add(name);
-      entries.push({ name, data: await blobToU8(rec.blob) });
+      entries.push({ name, data: await blobToU8(await downloadableRecordBlob(rec)) });
     }
     const part = Math.floor(start / ZIP_BATCH_SIZE) + 1;
     const suffix = batchCount > 1 ? `_第${part}部分_共${batchCount}部分` : '';
@@ -644,7 +658,7 @@ async function* albumZipEntries(recordIds, signal) {
       let duplicateIndex = 1;
       while (usedNames.has(name)) name = fileNameOf(rec, duplicateIndex++, ext);
       usedNames.add(name);
-      yield { name, blob: rec.blob, date: new Date(rec.createdAt) };
+      yield { name, blob: await downloadableRecordBlob(rec), date: new Date(rec.createdAt) };
     }
   }
 }
@@ -671,7 +685,7 @@ async function downloadAllFallback(recordIds, fileName, signal) {
       let duplicateIndex = 1;
       while (usedNames.has(name)) name = fileNameOf(rec, duplicateIndex++, ext);
       usedNames.add(name);
-      entries.push({ name, data: await blobToU8(rec.blob) });
+      entries.push({ name, data: await blobToU8(await downloadableRecordBlob(rec)) });
       completed += 1;
       updateDownloadProgress(completed, total);
     }
@@ -790,7 +804,9 @@ els.btnSelectAll.addEventListener('click', () => {
 
 els.btnDownloadSel.addEventListener('click', () => {
   const list = records.filter((r) => selected.has(r.id));
-  downloadRecords(list);
+  void downloadRecords(list).catch((error) => showToast(ui('下载失败：{error}', {
+    error: error?.message || String(error)
+  })));
 });
 
 els.btnDownloadAll.addEventListener('click', () => {
@@ -887,7 +903,9 @@ els.lbCopy.addEventListener('click', async () => {
 
 els.lbDownload.addEventListener('click', () => {
   const rec = records.find((r) => r.id === currentLbId);
-  if (rec) downloadRecords([rec]);
+  if (rec) void downloadRecords([rec]).catch((error) => showToast(ui('下载失败：{error}', {
+    error: error?.message || String(error)
+  })));
 });
 
 els.lbDelete.addEventListener('click', async () => {

@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
+  <div id="dropOverlay" class="drop-overlay" role="status" aria-live="polite" hidden>
+    <div class="drop-overlay-card">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+      <strong>拖放图片到这里</strong>
+      <span>先读取提示词；没有时再调用反推模型</span>
+    </div>
+  </div>
   <header class="topbar">
     <img class="logo" src="../icons/icon48.png" alt="" />
     <h1>EchoShot · 拍同款</h1>
@@ -24,7 +31,7 @@
     <section id="secPrivacy" class="privacy-card" hidden>
       <div class="privacy-icon" aria-hidden="true">🔒</div>
       <h2>开始前，请确认数据使用方式</h2>
-      <p>当你点击反推、生成、角色替换或组图生成时，所选来源图、参考素材和提示词会发送到你选择的 AI 平台，用于完成本次任务。</p>
+      <p>当你点击反推、拖入不含可识别生成提示词的图片、生成、角色替换或组图生成时，所选来源图、参考素材和提示词会发送到你选择的 AI 平台，用于完成本次任务。</p>
       <ul>
         <li>API Key 仅保存在本机 Chrome 扩展存储中。</li>
         <li>来源图、角色/物品素材、提示词和生成结果保存在本机，可随时删除。</li>
@@ -48,6 +55,7 @@
       </div>
       <div class="empty-tips">
         <p>将鼠标移到网页图片上，点击魔法按钮；目标不是图片时，可使用框选截图。</p>
+        <p>也可以把本地图片拖入侧边栏；有兼容的生成提示词时直接读取，没有时再进行反推。</p>
         <p>也可以直接使用“惊喜创作”，随机生成提示词后再生成图片。</p>
       </div>
       <div class="empty-actions">

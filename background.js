@@ -953,6 +953,7 @@ function sourceAssetIdOf(source, fallback = '') {
 
 async function saveGeneratedRecord(resp, {
   prompt,
+  requestPrompt = '',
   source,
   sourcePrompt = '',
   promptZh = '',
@@ -975,6 +976,7 @@ async function saveGeneratedRecord(resp, {
     id: recordId,
     createdAt: Date.now(),
     prompt,
+    requestPrompt: requestPrompt || prompt,
     sourcePrompt: sourcePrompt || prompt,
     promptZh: promptZh || '',
     explanationLanguage: explanationLanguage || '',
@@ -1303,6 +1305,7 @@ async function generateAndSave(payload, update, control) {
   for (const image of images) {
     const albumRecordId = await saveGeneratedRecord({ ...resp, ...image, images: undefined }, {
       prompt: payload.prompt,
+      requestPrompt: payload.prompt,
       source,
       sourcePrompt: payload.sourcePrompt,
       promptZh: payload.promptZh,
@@ -1347,6 +1350,7 @@ async function editAndSave(payload, update, control) {
   const albumRecordId = await saveGeneratedRecord(resp, {
     // payload.prompt 是实际发送给编辑模型的替换指令，不应覆盖作品原有提示词。
     prompt: payload.albumPrompt || payload.sourcePrompt || payload.prompt,
+    requestPrompt: payload.prompt,
     source,
     sourcePrompt: payload.sourcePrompt,
     promptZh: payload.promptZh,
@@ -1397,6 +1401,7 @@ async function generateGroupAndSave(payload, update, control) {
     if (!resp?.ok) throw new Error(`第 ${number} 张失败：${resp?.error || '未知错误'}`);
     const albumRecordId = await saveGeneratedRecord(resp, {
       prompt: payload.prompt,
+      requestPrompt: variationPrompt,
       source,
       sourcePrompt: payload.sourcePrompt,
       promptZh: payload.promptZh,

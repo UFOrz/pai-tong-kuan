@@ -19,6 +19,7 @@ EchoShot · 拍同款是一款基于 Chrome Manifest V3 的浏览器扩展。用
 - 单图、角色替换和组图任务支持安全停止，已完成结果仍会保存
 - 生成结果下载支持瞬时网络错误自动重试
 - RunningHUB 工作流返回 ZIP 时自动解压，并将其中图片逐张保存到本地相册
+- 下载图片会嵌入生成信息；拖入侧边栏时可在本机读取 EchoShot、AUTOMATIC1111 / Forge、Fooocus、NovelAI 与 ComfyUI 提示词，无可识别信息时才调用反推模型
 - 本地角色与物品素材库
 - 本地相册、搜索、大图切换和原图对比
 - 用户自行配置 API Key（BYOK）
