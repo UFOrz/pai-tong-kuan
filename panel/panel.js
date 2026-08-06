@@ -985,6 +985,13 @@ async function createSurprisePrompt() {
   }
 }
 
+function renderSourceMeta(s = source) {
+  els.srcMeta.textContent = [
+    s?.pageTitle || s?.pageUrl || '',
+    s?.metadataSource ? ui('元数据：{source}', { source: s.metadataSource }) : ''
+  ].filter(Boolean).join(' · ');
+}
+
 function applySource(s) {
   const isNew = sourceKey(source) !== sourceKey(s);
   const becameReady = s.status === 'ready' && (isNew || source?.status !== 'ready');
@@ -999,10 +1006,7 @@ function applySource(s) {
   show(els.secEmpty, false);
   show(els.secSource, true);
 
-  els.srcMeta.textContent = [
-    s.pageTitle || s.pageUrl || '',
-    s.metadataSource ? ui('元数据：{source}', { source: s.metadataSource }) : ''
-  ].filter(Boolean).join(' · ');
+  renderSourceMeta(s);
   if (s.status === 'loading') {
     els.srcImg.removeAttribute('src');
     show(els.srcImg, false);
@@ -1111,6 +1115,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
     settings = nextSettings;
     currentLanguage = resolveLanguage(settings.language);
     localizeDocument(currentLanguage);
+    renderSourceMeta(source);
     if (surpriseMode) {
       els.surpriseProfile.textContent = `${ui(currentSurpriseProfileLabel)} · ${ui('不使用参考图')}`;
     }
