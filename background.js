@@ -31,6 +31,7 @@ import {
 } from './lib/api.js';
 import { hasPrivacyConsent } from './lib/privacy.js';
 import { addRecordWithSource } from './lib/db.js';
+import { promptFromImageGenerationMetadata, readImageGenerationMetadata } from './lib/image-metadata.js';
 import { interruptedSessionPatch, normalizedWindowId, recoverInterruptedGenerationJobs, scopedSessionKey } from './lib/task-state.js';
 import { resolveLanguage, t } from './lib/i18n.js';
 
@@ -41,6 +42,7 @@ const SURPRISE_HISTORY_LIMIT = 5;
 const JOB_HEARTBEAT_INTERVAL_MS = 20000;
 const GENERATION_JOB_HISTORY_LIMIT = 20;
 const MAX_CONCURRENT_GENERATION_JOBS = 4;
+const MAX_WEB_SOURCE_IMAGE_BYTES = 128 * 1024 * 1024;
 const activeSourceRequestIds = new Map();
 const runningJobs = new Map();
 const generationJobQueues = new Map();
@@ -71,6 +73,17 @@ async function setWindowSession(kind, windowId, value) {
 async function removeWindowSession(kind, windowId) {
   const key = scopedSessionKey(kind, windowId);
   if (key) await chrome.storage.session.remove(key);
+}
+
+async function setWindowSourceAndTask(windowId, source, task) {
+  const sourceStorageKey = scopedSessionKey('pendingSource', windowId);
+  const taskStorageKey = scopedSessionKey('panelTask', windowId);
+  if (!sourceStorageKey || !taskStorageKey) throw new Error('无法确定当前浏览器窗口');
+  // 同一次写入确保侧边栏收到 ready 来源变更时，匹配的提示词任务已经可读取。
+  await chrome.storage.session.set({
+    [sourceStorageKey]: source,
+    [taskStorageKey]: task
+  });
 }
 
 function withGenerationJobsLock(windowId, operation) {
@@ -425,6 +438,57 @@ function openSidePanelNow(windowId) {
   }
 }
 
+async function fetchOriginalSourceBlob(src, timeoutMs = 10000) {
+  if (!/^(?:https?:|data:)/i.test(String(src || ''))) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(src, {
+      credentials: 'include',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('抓取图片失败 HTTP ' + response.status);
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_WEB_SOURCE_IMAGE_BYTES) {
+      throw new Error('网页原图超过 128 MiB，改用页面像素捕获');
+    }
+    const mime = String(response.headers.get('content-type') || '').split(';')[0].trim();
+    let blob;
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      const parts = [];
+      let total = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_WEB_SOURCE_IMAGE_BYTES) {
+          await reader.cancel();
+          throw new Error('网页原图超过 128 MiB，改用页面像素捕获');
+        }
+        parts.push(value);
+      }
+      blob = new Blob(parts, { type: mime });
+    } else {
+      blob = await response.blob();
+      if (blob.size > MAX_WEB_SOURCE_IMAGE_BYTES) {
+        throw new Error('网页原图超过 128 MiB，改用页面像素捕获');
+      }
+    }
+    if (!/^image\//i.test(blob.type || '')) {
+      throw new Error('目标不是图片（' + (blob.type || '未知类型') + '），可能被站点防盗链保护');
+    }
+    return blob;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function sourceGenerationMetadata(blob) {
+  if (!(blob instanceof Blob) || !/^image\//i.test(blob.type || '')) return null;
+  return readImageGenerationMetadata(blob).catch(() => null);
+}
+
 async function handleSource(payload, windowId, panelOpenPromise = null) {
   if (!payload?.src) return;
   windowId = normalizedWindowId(windowId);
@@ -490,8 +554,18 @@ async function handleSource(payload, windowId, panelOpenPromise = null) {
       ]);
       return;
     }
-    let blob;
-    if (!payload.dataUrl && payload.captureTabId != null) {
+    let blob = null;
+    let generationMetadata = null;
+
+    // 网页普通图片先尝试读取原始文件。元数据必须在 Canvas/缩放重新编码前读取，
+    // 否则 PNG 文本块、JPEG/WebP EXIF 等生成信息会丢失。
+    if (!payload.dataUrl) {
+      blob = await fetchOriginalSourceBlob(payload.src).catch(() => null);
+      generationMetadata = await sourceGenerationMetadata(blob);
+    }
+
+    // 原始文件因防盗链、登录态或 blob: URL 无法由后台读取时，继续使用页面已解码像素。
+    if (!blob && !payload.dataUrl && payload.captureTabId != null) {
       const captured = await chrome.tabs.sendMessage(payload.captureTabId, {
         type: 'ir.captureImage',
         src: payload.src
@@ -505,25 +579,47 @@ async function handleSource(payload, windowId, panelOpenPromise = null) {
     if (payload.dataUrl) {
       // blob: 图片由内容脚本在页面内捕获后以 dataURL 传来
       blob = await blobFromDataUrl(payload.dataUrl);
-    } else {
-      const resp = await fetch(payload.src, { credentials: 'include' });
-      if (!resp.ok) throw new Error('抓取图片失败 HTTP ' + resp.status);
-      blob = await resp.blob();
+    } else if (!blob) {
+      // 保留原有最后一次直接抓取：没有内容脚本或页面像素捕获失败时给出明确错误。
+      blob = await fetchOriginalSourceBlob(payload.src);
     }
-    if (!/^image\//.test(blob.type)) {
-      throw new Error('目标不是图片（' + (blob.type || '未知类型') + '），可能被站点防盗链保护');
+    if (!blob || !/^image\//i.test(blob.type || '')) {
+      throw new Error('目标不是图片（' + (blob?.type || '未知类型') + '），可能被站点防盗链保护');
     }
     const norm = await normalizeImageBlob(blob, 2048);
     if (activeSourceRequestIds.get(windowId) !== requestId) return;
     const { previewUrl: _previewUrl, ...settledSource } = pending;
-    await setWindowSession('pendingSource', windowId, {
+    const prompt = promptFromImageGenerationMetadata(generationMetadata);
+    const metadataSource = prompt
+      ? String(generationMetadata?.generatorLabel || generationMetadata?.software || '')
+      : '';
+    const readySource = {
       ...settledSource,
       status: 'ready',
+      needsReverse: !prompt,
+      embeddedMetadata: Boolean(prompt),
+      metadataSource,
       dataUrl: norm.dataUrl,
       width: payload.sourceWidth || norm.width,
       height: payload.sourceHeight || norm.height,
       mime: norm.mime
-    });
+    };
+    if (prompt) {
+      await setWindowSourceAndTask(windowId, readySource, {
+        sourceRequestId: requestId,
+        sourceTs: pending.ts,
+        prompt,
+        sourcePrompt: prompt,
+        promptZh: '',
+        explanationLanguage: '',
+        ratio: String(generationMetadata?.ratio || ''),
+        metadataRead: true,
+        metadataSource,
+        updatedAt: Date.now()
+      });
+    } else {
+      await setWindowSession('pendingSource', windowId, readySource);
+    }
   } catch (e) {
     if (activeSourceRequestIds.get(windowId) !== requestId) return;
     const { previewUrl: _previewUrl, ...settledSource } = pending;

@@ -230,7 +230,7 @@
     const src = img.currentSrc || img.src;
     const payload = { src, previewUrl: src, pageUrl: location.href, pageTitle: document.title };
     // 第一时间通知后台打开侧边栏，不能在此之前执行 Canvas 或任何 await。
-    // 后台打开侧边栏后会再向当前页面请求已解码像素，仍然不会重复下载普通图片。
+    // 后台打开侧边栏后会先尝试读取原始图片元数据；原图不可访问时再请求页面已解码像素。
     try {
       chrome.runtime.sendMessage({ type: 'ir.openPanel', payload }, () => {
         // 读取 lastError 以避免未捕获警告；SW 不可达时静默（用户可从右键菜单重试）
