@@ -522,6 +522,16 @@ select {
   word-break: break-all;
 }
 
+.result-heading { align-items: center; }
+.result-count { color: #8a8798; font-size: 11.5px; font-weight: 500; }
+.result-list { display: grid; gap: 14px; }
+.result-card {
+  padding-top: 14px;
+  border-top: 1px solid #ece9f5;
+}
+.result-card:first-child { padding-top: 0; border-top: 0; }
+.result-card .btn-row { margin-top: 9px; }
+.result-card .btn { min-width: 0; padding-inline: 7px; font-size: 12px; }
 .result-img {
   width: 100%;
   border-radius: 8px;
@@ -534,6 +544,11 @@ select {
 .result-link:focus-visible { outline: 3px solid rgba(118, 87, 231, .34); outline-offset: 3px; }
 .result-meta { margin-top: 8px; font-size: 12px; color: #8a8a99; line-height: 1.7; }
 .saved-tag { margin-top: 8px; color: #1f9d55; font-size: 12.5px; }
+
+@media (max-width: 350px) {
+  .result-card .btn-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .result-card .btn:last-child { grid-column: 1 / -1; }
+}
 
 .empty {
   text-align: center;

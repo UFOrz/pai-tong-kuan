@@ -224,15 +224,8 @@
 
     <!-- 生成结果 -->
     <section id="secResult" class="card" hidden>
-      <div class="card-title">同款结果</div>
-      <img id="resImg" class="result-img result-link" alt="同款结果" role="button" tabindex="0" title="在相册中查看大图" aria-label="在相册中查看这张生成图片的大图" />
-      <div class="result-meta" id="resMeta"></div>
-      <div class="btn-row">
-        <button id="btnDownload" class="btn">下载</button>
-        <button id="btnRegen" class="btn">重新生成</button>
-        <button id="btnGoAlbum" class="btn ghost">查看相册</button>
-      </div>
-      <div id="saveState" class="saved-tag" hidden>✓ 已自动保存到相册</div>
+      <div class="card-title result-heading"><span>同款结果</span><span id="resultCount" class="result-count"></span></div>
+      <div id="resultList" class="result-list" aria-live="polite"></div>
     </section>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

@@ -529,7 +529,8 @@ async function handleSource(payload, windowId, panelOpenPromise = null) {
   };
   await Promise.all([
     setWindowSession('pendingSource', windowId, pending),
-    removeWindowSession('panelTask', windowId)
+    removeWindowSession('panelTask', windowId),
+    removeWindowSession('surpriseTask', windowId)
   ]);
   if (activeSourceRequestIds.get(windowId) !== requestId) return;
 
@@ -1385,7 +1386,9 @@ async function generateAndSave(payload, update, control) {
   await update({
     stage: '正在调用生图模型',
     total: 1,
-    sourceKey: source?.requestId || source?.ts || null,
+    // 惊喜模式没有 sourceSnapshot，必须保留面板传来的隔离键；否则任务会
+    // 退化为“无来源”并可能被错误展示到随后点击的普通网页图片下。
+    sourceKey: source?.requestId || source?.ts || payload.sourceKey || null,
     label: 'generate'
   });
   const resp = await doGenerate({

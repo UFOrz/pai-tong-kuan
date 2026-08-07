@@ -10,6 +10,8 @@ import {
   readImageGenerationMetadata
 } from '../lib/image-metadata.js';
 import {
+  completedGenerationJobsForSource,
+  generationJobBelongsToSource,
   normalizedWindowId,
   scopedSessionKey,
   shouldAutoReverse,
@@ -176,12 +178,8 @@ const els = {
   replaceDone: $('replaceDone'),
   replaceError: $('replaceError'),
   btnCancelGroup: $('btnCancelGroup'),
-  resImg: $('resImg'),
-  resMeta: $('resMeta'),
-  btnDownload: $('btnDownload'),
-  btnRegen: $('btnRegen'),
-  btnGoAlbum: $('btnGoAlbum'),
-  saveState: $('saveState'),
+  resultCount: $('resultCount'),
+  resultList: $('resultList'),
   dropOverlay: $('dropOverlay'),
   toast: $('toast')
 };
@@ -198,7 +196,6 @@ let reversing = false;
 let generating = false;
 let toastTimer = 0;
 let reverseSeq = 0;
-let restoredResultUrl = '';
 let taskWriteChain = Promise.resolve();
 let settingsWriteChain = Promise.resolve();
 let taskPersistTimer = 0;
@@ -208,10 +205,13 @@ let selectedCharacterId = '';
 let currentWindowId = null;
 const jobPreviewUrls = new Map();
 const renderedJobRecordIds = new Set();
+const resultCardUrls = new Map();
+const resultRecords = new Map();
 let visibleJobState = null;
 let visibleJobTimer = 0;
 let generationJobsState = [];
 let generationJobsTimer = 0;
+let generationJobsRenderChain = Promise.resolve();
 let generationSubmitLocked = false;
 const presentedGenerationJobIds = new Set();
 let visibleReverseJobState = null;
@@ -365,26 +365,26 @@ function setPromptDoneLabel(fromMetadata = false) {
     : '✓ 反推成功，可直接编辑提示词');
 }
 
-function revealGeneratedResult() {
+function revealGeneratedResult(card, image) {
   const token = ++resultRevealToken;
   const reveal = () => {
-    if (token !== resultRevealToken || els.secResult.hidden || !els.resImg.src) return;
+    if (token !== resultRevealToken || els.secResult.hidden || !card?.isConnected || !image?.src) return;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (token !== resultRevealToken || els.secResult.hidden) return;
+        if (token !== resultRevealToken || els.secResult.hidden || !card.isConnected) return;
         const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-        els.resImg.scrollIntoView({
+        card.scrollIntoView({
           behavior: reduceMotion ? 'auto' : 'smooth',
           block: 'center',
           inline: 'nearest'
         });
-        els.resImg.focus({ preventScroll: true });
+        image.focus({ preventScroll: true });
       });
     });
   };
 
-  if (els.resImg.complete && els.resImg.naturalWidth > 0) reveal();
-  else els.resImg.addEventListener('load', reveal, { once: true });
+  if (image.complete && image.naturalWidth > 0) reveal();
+  else image.addEventListener('load', reveal, { once: true });
 }
 
 function localizedJobStage(stage = '') {
@@ -611,10 +611,14 @@ function renderPrivacyRequired() {
   show(els.secBatch, false);
 }
 
-function revokeRestoredResultUrl() {
-  if (!restoredResultUrl) return;
-  URL.revokeObjectURL(restoredResultUrl);
-  restoredResultUrl = '';
+function clearResultCards() {
+  for (const url of resultCardUrls.values()) URL.revokeObjectURL(url);
+  resultCardUrls.clear();
+  resultRecords.clear();
+  els.resultList.replaceChildren();
+  els.resultCount.textContent = '';
+  lastResult = null;
+  lastAlbumRecordId = '';
 }
 
 function clearJobPreviewUrls() {
@@ -655,7 +659,7 @@ function applyDefaultRatio() {
 
 function resetTaskUI() {
   resultRevealToken += 1;
-  revokeRestoredResultUrl();
+  clearResultCards();
   visibleJobState = null;
   clearInterval(visibleJobTimer);
   visibleJobTimer = 0;
@@ -670,14 +674,10 @@ function resetTaskUI() {
   currentSurpriseProfile = '';
   currentSurpriseProfileLabel = '';
   currentSurpriseExplanation = '';
-  lastResult = null;
-  lastAlbumRecordId = '';
   els.taPrompt.value = '';
   els.taPrompt.placeholder = ui('反推得到的提示词会显示在这里，可以直接编辑');
-  els.resImg.removeAttribute('src');
   show(els.zhNote, false);
   show(els.secResult, false);
-  show(els.saveState, false);
   show(els.genDone, false);
   show(els.genError, false);
   show(els.genProgress, false);
@@ -762,7 +762,11 @@ async function restoreTask(taskSource) {
     return;
   }
   const panelTask = await getWindowSession('panelTask');
-  if (sourceKey(source) !== expectedKey || sourceKey(panelTask) !== expectedKey) return;
+  if (sourceKey(source) !== expectedKey) return;
+  if (sourceKey(panelTask) !== expectedKey) {
+    if (generationJobsState.length) await renderGenerationJobs(generationJobsState, { restore: true });
+    return;
+  }
 
   reversedPrompt = panelTask.sourcePrompt || '';
   reversedPromptZh = panelTask.promptZh || '';
@@ -781,28 +785,14 @@ async function restoreTask(taskSource) {
   }
   updateHints();
 
-  if (!panelTask.albumRecordId) return;
-  const rec = await getById(panelTask.albumRecordId);
-  if (!rec || sourceKey(source) !== expectedKey) return;
-  revokeRestoredResultUrl();
-  restoredResultUrl = URL.createObjectURL(rec.blob);
-  lastResult = {
-    dataUrl: restoredResultUrl,
-    mime: rec.blob?.type || 'image/png',
-    provider: rec.provider,
-    model: rec.model,
-    width: rec.width,
-    height: rec.height,
-    ratio: rec.ratio,
-    size: rec.size
-  };
-  lastAlbumRecordId = rec.id;
-  els.resImg.src = restoredResultUrl;
-  els.resMeta.textContent =
-    `${rec.provider || ''} · ${rec.model || ''} · ${rec.width}×${rec.height} · ${rec.ratio || ''}`;
-  show(els.secResult, true);
-  show(els.genDone, true);
-  show(els.saveState, true);
+  if (panelTask.albumRecordId) {
+    const rec = await getById(panelTask.albumRecordId);
+    if (!rec || sourceKey(source) !== expectedKey) return;
+    appendResultCard(rec, { persist: false });
+  }
+  if (generationJobsState.length && sourceKey(source) === expectedKey) {
+    await renderGenerationJobs(generationJobsState, { restore: true });
+  }
 }
 
 async function consumeNewSourceAndReverse(s) {
@@ -1061,6 +1051,7 @@ function applySource(s) {
 
 function renderEmpty() {
   source = null;
+  clearResultCards();
   surpriseMode = false;
   els.secPrompt.classList.remove('surprise-active');
   show(els.surpriseNotice, false);
@@ -1116,6 +1107,7 @@ chrome.storage.local.onChanged.addListener((changes) => {
     currentLanguage = resolveLanguage(settings.language);
     localizeDocument(currentLanguage);
     renderSourceMeta(source);
+    refreshResultCardTranslations();
     if (surpriseMode) {
       els.surpriseProfile.textContent = `${ui(currentSurpriseProfileLabel)} · ${ui('不使用参考图')}`;
     }
@@ -1605,7 +1597,7 @@ async function replaceCharacter() {
       showToast(ui('上一张图片的替换已完成，已保存到相册'));
       return;
     }
-    presentSavedResult(resp, '角色/物品替换', false);
+    await presentSavedResult(resp, '角色/物品替换');
     show(els.replaceDone, true);
     if (resp.cancelled) showToast(ui('任务已停止，当前已完成的图片已保存'));
   } catch (error) {
@@ -1622,17 +1614,134 @@ async function replaceCharacter() {
   }
 }
 
-function presentSavedResult(resp, label = '生成', showGenerationDone = true) {
-  lastResult = resp;
-  els.resImg.src = resp.dataUrl;
-  els.resMeta.textContent = `${resp.provider} · ${resp.model} · ${resp.width}×${resp.height} · ${resp.ratio}`;
+function resultMetaText(rec) {
+  const displayModel = recordModelDisplayName(buildModelAliasIndex(settings || { platforms: [] }), rec);
+  return [
+    rec.provider || '',
+    displayModel || rec.model || '',
+    rec.width && rec.height ? `${rec.width}×${rec.height}` : '',
+    rec.ratio || ''
+  ].filter(Boolean).join(' · ');
+}
+
+function refreshResultCardTranslations() {
+  const count = resultRecords.size;
+  els.resultCount.textContent = count ? ui('共 {count} 张', { count }) : '';
+  for (const card of els.resultList.querySelectorAll('.result-card')) {
+    const rec = resultRecords.get(card.dataset.recordId);
+    if (!rec) continue;
+    const image = card.querySelector('.result-img');
+    image.alt = ui('同款结果');
+    image.title = ui('在相册中查看大图');
+    image.setAttribute('aria-label', ui('在相册中查看这张生成图片的大图'));
+    card.querySelector('.result-meta').textContent = resultMetaText(rec);
+    card.querySelector('[data-action="download"]').textContent = ui('下载');
+    card.querySelector('[data-action="regenerate"]').textContent = ui('重新生成');
+    card.querySelector('[data-action="album"]').textContent = ui('查看相册');
+    card.querySelector('.saved-tag').textContent = ui('✓ 已自动保存到相册');
+  }
+}
+
+function openResultRecordInAlbum(recordId) {
+  if (!recordId) return showToast(ui('这张图片还未保存到相册'));
+  sendQuietly({ type: 'ir.openAlbum', payload: { recordId } });
+}
+
+function appendResultCard(rec, { reveal = false, persist = true } = {}) {
+  if (!rec?.id || !rec?.blob) return null;
+  const existing = els.resultList.querySelector(`[data-record-id="${CSS.escape(rec.id)}"]`);
+  if (existing) {
+    const url = resultCardUrls.get(rec.id) || '';
+    lastResult = {
+      dataUrl: url,
+      mime: rec.blob?.type || 'image/png',
+      provider: rec.provider,
+      model: rec.model,
+      width: rec.width,
+      height: rec.height,
+      ratio: rec.ratio,
+      size: rec.size
+    };
+    lastAlbumRecordId = rec.id;
+    els.resultList.appendChild(existing);
+    if (persist) void persistTask({ albumRecordId: rec.id });
+    if (reveal) revealGeneratedResult(existing, existing.querySelector('.result-img'));
+    return existing;
+  }
+
+  const card = document.createElement('article');
+  card.className = 'result-card';
+  card.dataset.recordId = rec.id;
+
+  const image = document.createElement('img');
+  image.className = 'result-img result-link';
+  image.tabIndex = 0;
+  image.setAttribute('role', 'button');
+  const url = URL.createObjectURL(rec.blob);
+  resultCardUrls.set(rec.id, url);
+  image.src = url;
+  const open = () => openResultRecordInAlbum(rec.id);
+  image.addEventListener('click', open);
+  image.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    open();
+  });
+
+  const meta = document.createElement('div');
+  meta.className = 'result-meta';
+
+  const actions = document.createElement('div');
+  actions.className = 'btn-row';
+  const download = document.createElement('button');
+  download.className = 'btn';
+  download.type = 'button';
+  download.dataset.action = 'download';
+  download.addEventListener('click', () => {
+    void downloadRecord(rec).catch((error) => showToast(ui('下载失败：{error}', {
+      error: error?.message || String(error)
+    })));
+  });
+  const regenerate = document.createElement('button');
+  regenerate.className = 'btn';
+  regenerate.type = 'button';
+  regenerate.dataset.action = 'regenerate';
+  regenerate.addEventListener('click', () => void regenerateRecord(rec));
+  const album = document.createElement('button');
+  album.className = 'btn ghost';
+  album.type = 'button';
+  album.dataset.action = 'album';
+  album.addEventListener('click', open);
+  actions.append(download, regenerate, album);
+
+  const saved = document.createElement('div');
+  saved.className = 'saved-tag';
+  card.append(image, meta, actions, saved);
+  resultRecords.set(rec.id, rec);
+  els.resultList.appendChild(card);
+  refreshResultCardTranslations();
+
+  lastResult = {
+    dataUrl: url,
+    mime: rec.blob?.type || 'image/png',
+    provider: rec.provider,
+    model: rec.model,
+    width: rec.width,
+    height: rec.height,
+    ratio: rec.ratio,
+    size: rec.size
+  };
+  lastAlbumRecordId = rec.id;
   show(els.secResult, true);
-  show(els.genDone, showGenerationDone);
-  show(els.saveState, Boolean(resp.albumRecordId));
-  lastAlbumRecordId = resp.albumRecordId || '';
-  if (lastAlbumRecordId) void persistTask({ albumRecordId: lastAlbumRecordId });
+  if (persist) void persistTask({ albumRecordId: rec.id });
+  if (reveal) revealGeneratedResult(card, image);
+  return card;
+}
+
+async function presentSavedResult(resp, label = '生成') {
+  const rec = resp?.albumRecordId ? await getById(resp.albumRecordId).catch(() => null) : null;
+  if (rec) appendResultCard(rec, { reveal: true });
   showToast(ui('{label}完成，已保存到相册', { label: ui(label) }));
-  revealGeneratedResult();
 }
 
 function replacementEditSelection() {
@@ -1674,25 +1783,7 @@ function appendGroupPreview(rec, index, count) {
 
 function showLatestGroupResult(rec, { reveal = false } = {}) {
   if (!rec) return;
-  const url = jobPreviewUrls.get(rec.id) || URL.createObjectURL(rec.blob);
-  if (!jobPreviewUrls.has(rec.id)) jobPreviewUrls.set(rec.id, url);
-  lastResult = {
-    dataUrl: url,
-    mime: rec.blob?.type || 'image/png',
-    provider: rec.provider,
-    model: rec.model,
-    width: rec.width,
-    height: rec.height,
-    ratio: rec.ratio,
-    size: rec.size
-  };
-  lastAlbumRecordId = rec.id;
-  els.resImg.src = url;
-  els.resMeta.textContent = `${rec.provider} · ${rec.model} · ${rec.width}×${rec.height} · ${rec.ratio}`;
-  show(els.secResult, true);
-  show(els.genDone, true);
-  show(els.saveState, true);
-  if (reveal) revealGeneratedResult();
+  appendResultCard(rec, { reveal });
 }
 
 async function loadJobRecords(recordIds) {
@@ -1700,28 +1791,9 @@ async function loadJobRecords(recordIds) {
   return records.filter(Boolean);
 }
 
-async function showSavedRecord(rec, showGenerationDone = true, { reveal = false } = {}) {
+async function showSavedRecord(rec, _showGenerationDone = true, { reveal = false, persist = true } = {}) {
   if (!rec) return;
-  revokeRestoredResultUrl();
-  restoredResultUrl = URL.createObjectURL(rec.blob);
-  lastResult = {
-    dataUrl: restoredResultUrl,
-    mime: rec.blob?.type || 'image/png',
-    provider: rec.provider,
-    model: rec.model,
-    width: rec.width,
-    height: rec.height,
-    ratio: rec.ratio,
-    size: rec.size
-  };
-  lastAlbumRecordId = rec.id;
-  els.resImg.src = restoredResultUrl;
-  els.resMeta.textContent = `${rec.provider || ''} · ${rec.model || ''} · ${rec.width}×${rec.height} · ${rec.ratio || ''}`;
-  show(els.secResult, true);
-  show(els.genDone, showGenerationDone);
-  show(els.saveState, true);
-  void persistTask({ albumRecordId: rec.id });
-  if (reveal) revealGeneratedResult();
+  appendResultCard(rec, { reveal, persist });
 }
 
 function updateVisibleJobClock() {
@@ -1758,12 +1830,14 @@ function setVisibleJobState(job) {
 
 async function renderBackgroundJob(job, { restore = false } = {}) {
   if (!job || (job.sourceKey && job.sourceKey !== sourceKey(source))) return;
+  const expectedSourceKey = sourceKey(source);
   setVisibleJobState(job);
   const elapsed = Math.max(0, Math.round(((job.finishedAt || Date.now()) - job.startedAt) / 1000));
   if (job.label === 'group') {
     show(els.secBatch, true);
     $('batchStatus').classList.toggle('batch-running', job.status === 'running');
     const records = await loadJobRecords(job.recordIds || []);
+    if (sourceKey(source) !== expectedSourceKey) return;
     records.forEach((record, index) => appendGroupPreview(record, index + 1, job.total || records.length));
     if (job.status === 'running') {
       generating = true;
@@ -1826,6 +1900,7 @@ async function renderBackgroundJob(job, { restore = false } = {}) {
   setCancelControls('');
   if (job.status === 'completed' && job.lastRecordId) {
     const rec = await getById(job.lastRecordId).catch(() => null);
+    if (sourceKey(source) !== expectedSourceKey) return;
     await showSavedRecord(rec, !isReplacement, { reveal: !restore });
     if (isReplacement) show(els.replaceDone, true);
   } else if (job.status === 'failed') {
@@ -1838,13 +1913,23 @@ async function renderBackgroundJob(job, { restore = false } = {}) {
   } else if (job.status === 'cancelled') {
     if (job.lastRecordId) {
       const rec = await getById(job.lastRecordId).catch(() => null);
+      if (sourceKey(source) !== expectedSourceKey) return;
       await showSavedRecord(rec, !isReplacement);
     }
     showToast(ui(job.lastRecordId ? '任务已停止，当前已完成的图片已保存' : '任务已停止'));
   }
 }
 
-async function renderGenerationJobs(jobs, { restore = false } = {}) {
+function renderGenerationJobs(jobs, options = {}) {
+  const run = generationJobsRenderChain
+    .catch(() => {})
+    .then(() => renderGenerationJobsNow(jobs, options));
+  generationJobsRenderChain = run;
+  return run;
+}
+
+async function renderGenerationJobsNow(jobs, { restore = false } = {}) {
+  const expectedSourceKey = sourceKey(source);
   const incoming = Array.isArray(jobs) ? jobs : [];
   const incomingIds = new Set(incoming.map((job) => job?.id).filter(Boolean));
   const pendingLocalJobs = generationJobsState.filter(
@@ -1853,34 +1938,52 @@ async function renderGenerationJobs(jobs, { restore = false } = {}) {
   setGenerationJobsState([...incoming, ...pendingLocalJobs]);
   const terminal = generationJobsState
     .filter((job) => job.status !== 'running' && !presentedGenerationJobIds.has(job.id))
-    .sort((a, b) => (Number(b.finishedAt || b.updatedAt) || 0) - (Number(a.finishedAt || a.updatedAt) || 0));
-  if (!terminal.length) return;
+    .sort((a, b) => (Number(a.finishedAt || a.updatedAt) || 0) - (Number(b.finishedAt || b.updatedAt) || 0));
+  if (!terminal.length && !restore) return;
 
-  // 一次存储更新可能同时带回多个历史任务。全部标记为已处理，但只展示
-  // 最近完成的一项，避免多个结果连续抢占侧边栏。
+  // 一次存储更新可能同时带回多个已完成任务。逐个标记并按完成顺序追加，
+  // 同一个相册记录由 appendResultCard 去重，避免监听与消息响应重复渲染。
   terminal.forEach((job) => presentedGenerationJobIds.add(job.id));
-  const latest = terminal.find((job) => !job.sourceKey || job.sourceKey === sourceKey(source)) || terminal[0];
-  const sameSource = !latest.sourceKey || latest.sourceKey === sourceKey(source);
-  if (latest.status === 'completed' && latest.lastRecordId) {
-    if (!sameSource) {
-      showToast(ui('上一张图片的生成已完成，已保存到相册'));
-      return;
+  const matching = terminal.filter((job) => generationJobBelongsToSource(job, source));
+  const matchingCompleted = completedGenerationJobsForSource(generationJobsState, source);
+  let newestCard = null;
+  let newestRecord = null;
+  for (const job of matchingCompleted) {
+    const recordIds = Array.isArray(job.recordIds) && job.recordIds.length
+      ? job.recordIds
+      : [job.lastRecordId].filter(Boolean);
+    const records = await loadJobRecords(recordIds);
+    if (sourceKey(source) !== expectedSourceKey) return;
+    for (const record of records) {
+      newestCard = appendResultCard(record, { persist: false }) || newestCard;
+      newestRecord = record;
     }
-    const record = await getById(latest.lastRecordId).catch(() => null);
-    if (!record) return;
-    await showSavedRecord(record, true, { reveal: !restore });
-    showToast(ui(restore ? '后台生成任务已完成，结果已保存到相册' : '生成完成，已保存到相册'));
-    return;
   }
-  if (latest.status === 'failed') {
-    if (!sameSource) {
-      showToast(ui('上一张图片生成失败：{error}', { error: latest.error || ui('未知错误') }));
-      return;
+  if (newestRecord) {
+    void persistTask({ albumRecordId: newestRecord.id });
+    const hasNewCompletion = matching.some((job) => job.status === 'completed');
+    if (hasNewCompletion && !restore && newestCard) {
+      revealGeneratedResult(newestCard, newestCard.querySelector('.result-img'));
     }
+    if (hasNewCompletion) {
+      showToast(ui(restore ? '后台生成任务已完成，结果已保存到相册' : '生成完成，已保存到相册'));
+    }
+  }
+
+  const latestFailure = matching.filter((job) => job.status === 'failed').at(-1);
+  if (latestFailure) {
     els.genError.textContent = ui('生成失败：{error}', {
-      error: latest.error || ui('未知错误')
+      error: latestFailure.error || ui('未知错误')
     });
     show(els.genError, true);
+  }
+
+  if (!matching.length && !restore) {
+    const latest = terminal.at(-1);
+    if (latest?.status === 'completed') showToast(ui('上一张图片的生成已完成，已保存到相册'));
+    else if (latest?.status === 'failed') {
+      showToast(ui('上一张图片生成失败：{error}', { error: latest.error || ui('未知错误') }));
+    }
   }
 }
 
@@ -2017,49 +2120,55 @@ async function handleAlbumAction() {
   else if (albumAction.action === 'group') await generateGroup(Number(albumAction.count || 4));
 }
 
-async function downloadCurrent() {
-  if (!lastResult) return;
-  const record = lastAlbumRecordId ? await getById(lastAlbumRecordId) : null;
-  const rawBlob = record?.blob || await fetch(lastResult.dataUrl).then((response) => {
-    if (!response.ok) throw new Error(`读取生成图片失败 HTTP ${response.status}`);
-    return response.blob();
-  });
-  const metadataRecord = record || {
-    createdAt: Date.now(),
-    prompt: els.taPrompt.value.trim(),
-    requestPrompt: els.taPrompt.value.trim(),
-    provider: lastResult.provider,
-    model: lastResult.model,
-    ratio: lastResult.ratio,
-    size: lastResult.size,
-    width: lastResult.width,
-    height: lastResult.height
-  };
-  const displayModel = recordModelDisplayName(buildModelAliasIndex(settings || { platforms: [] }), metadataRecord);
-  const embedded = await embedEchoShotMetadata(rawBlob, buildEchoShotMetadata(metadataRecord, {
+async function downloadRecord(record) {
+  if (!record?.blob) return;
+  const displayModel = recordModelDisplayName(buildModelAliasIndex(settings || { platforms: [] }), record);
+  const embedded = await embedEchoShotMetadata(record.blob, buildEchoShotMetadata(record, {
     displayModel,
     version: chrome.runtime.getManifest().version
   }));
   if (!embedded.embedded) throw new Error(ui('当前图片格式不支持嵌入生成信息'));
   const { ext } = await detectImageFileType(embedded.blob);
-  const d = new Date();
+  const d = new Date(record.createdAt || Date.now());
   const pad = (n) => String(n).padStart(2, '0');
   const a = document.createElement('a');
   const url = URL.createObjectURL(embedded.blob);
+  const suffix = String(record.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 8);
   a.download =
     `EchoShot_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`;
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}` +
+    `${suffix ? `_${suffix}` : ''}.${ext}`;
   a.href = url;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-function openCurrentResultInAlbum() {
-  if (!lastAlbumRecordId) {
-    showToast(ui('这张图片还未保存到相册'));
-    return;
+async function regenerateRecord(record) {
+  if (!record) return;
+  const prompt = String(record.prompt || record.requestPrompt || '').trim();
+  if (!prompt) return showToast(ui('缺少原作品提示词'));
+
+  const choices = listModelChoices(settings, 'image');
+  const originalChoice = choices.find((choice) =>
+    choice.model === record.model && (
+      (record.platformId && choice.platformId === record.platformId) ||
+      (!record.platformId && choice.platformName === record.provider)
+    ));
+  if (originalChoice) {
+    els.selImageModel.value = choiceValue(originalChoice);
+  } else {
+    showToast(ui('原模型当前未启用，将使用当前生图模型重新生成'));
   }
-  sendQuietly({ type: 'ir.openAlbum', payload: { recordId: lastAlbumRecordId } });
+
+  els.taPrompt.value = prompt;
+  reversedPrompt = record.sourcePrompt || prompt;
+  reversedPromptZh = record.promptZh || '';
+  reversedPromptLanguage = record.explanationLanguage || (reversedPromptZh ? 'zh' : '');
+  if ([...els.selRatio.options].some((option) => option.value === record.ratio)) {
+    els.selRatio.value = record.ratio;
+  }
+  updateHints();
+  await generate();
 }
 
 // ---------- 事件绑定 ----------
@@ -2072,19 +2181,7 @@ els.btnCopyPrompt.addEventListener('click', async () => {
   showToast(ui('提示词已复制'));
 });
 els.btnGenerate.addEventListener('click', generate);
-els.btnRegen.addEventListener('click', generate);
 els.btnCancelGroup.addEventListener('click', cancelGroupJob);
-els.btnDownload.addEventListener('click', () => {
-  void downloadCurrent().catch((error) => showToast(ui('下载失败：{error}', {
-    error: error?.message || String(error)
-  })));
-});
-els.resImg.addEventListener('click', openCurrentResultInAlbum);
-els.resImg.addEventListener('keydown', (event) => {
-  if (event.key !== 'Enter' && event.key !== ' ') return;
-  event.preventDefault();
-  openCurrentResultInAlbum();
-});
 $('btnCapture').addEventListener('click', capturePage);
 $('btnCapture2').addEventListener('click', capturePage);
 $('btnSurprise').addEventListener('click', createSurprisePrompt);
@@ -2177,7 +2274,6 @@ els.taPrompt.addEventListener('input', () => {
 
 $('btnAlbum').addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
 $('btnAlbum2').addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
-els.btnGoAlbum.addEventListener('click', () => sendQuietly({ type: 'ir.openAlbum' }));
 $('btnEmptyOptions').addEventListener('click', () => sendQuietly({ type: 'ir.openOptions' }));
 $('btnOptions').addEventListener('click', () => sendQuietly({ type: 'ir.openOptions' }));
 $('privacyConsentCheck').addEventListener('change', (e) => {
@@ -2248,7 +2344,7 @@ window.addEventListener('pagehide', () => {
   clearInterval(generationJobsTimer);
   clearInterval(visibleReverseJobTimer);
   void persistTask();
-  revokeRestoredResultUrl();
+  clearResultCards();
   clearJobPreviewUrls();
   for (const item of characters) {
     if (item._url) URL.revokeObjectURL(item._url);
